@@ -1,0 +1,20 @@
+search:
+  W: 2.0
+  L: 16
+  K: 50            # fallback sliding-window length
+  connectivity: 8  # 4 or 8
+controller:
+  type: multiplicative   # multiplicative | linear | fixed | tuned_fixed
+  linear: {a: 0.34, b: 0.33, c: 0.33}   # a+b+c = 1
+  tuned_fixed_w: 1.5                    # set by tune_validation.py
+risk:
+  radius: 3
+  lambda_obs: 0.34
+  lambda_mob: 0.33
+  lambda_dev: 0.33      # must sum to 1
+ranking: {alpha: 0.7, beta: 0.3}        # alpha + beta = 1
+fallback: {theta_c: 0.3, theta_r: 0.8, theta_dev: 0.5}
+confidence: {K_e: 5, tau_c: 0.05}
+normalization:
+  eps: 1.0e-6
+  # y_min/y_max/h_min/h_max are filled by tune_validation.py from validation stats
