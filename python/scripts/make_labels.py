@@ -100,7 +100,7 @@ def build_split(split: str, samples_per_goal: int, seed: int) -> None:
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--splits", nargs="+",
-                    default=["train", "val", "test",
+                    default=["train", "val", "val_shift", "test",
                              "shift_density", "shift_size", "shift_family"])
     ap.add_argument("--samples-per-goal", type=int, default=150)
     ap.add_argument("--seed", type=int, default=7)
