@@ -172,12 +172,22 @@ def main() -> None:
         # shift 2: map size
         ("shift_size", "random",
          [dict(density=d) for d in (0.20, 0.30, 0.40)], SS, max(6, n // 3)),
-        # shift 3: unseen families
+        # shift 3: unseen families (TEST ONLY — never used for tuning/calibration)
         ("shift_family", "maze",
          [dict(corridor=c) for c in (1, 2, 4)], S, max(6, n // 3)),
         ("shift_family", "narrow",
          [dict(passage=p, clutter=c) for p, c in ((1, .10), (2, .15), (3, .20))],
          S, max(6, n // 3)),
+        # calibration proxy: MILD, disjoint-seed geometry shift used ONLY to
+        # calibrate ensemble-variance -> confidence mapping (Section "variance
+        # calibration"). Never touches training weights, never touches the
+        # shift_family TEST set above -- different corridor/passage levels and
+        # a different map_id range guarantee no overlap.
+        ("val_shift", "maze",
+         [dict(corridor=c) for c in (2, 3)], S, max(4, n // 5)),
+        ("val_shift", "narrow",
+         [dict(passage=p, clutter=c) for p, c in ((2, .10), (3, .12))],
+         S, max(4, n // 5)),
     ]
 
     map_counter = 0
