@@ -1,2 +1,11 @@
 /cmake-build-debug
 /.idea
+/.vcpkg
+/.venv
+/data
+/python/ml/__pycache__
+/python/analysis/__pycache__
+/results/figures
+/results/models
+/results/tables
+/results/logs
