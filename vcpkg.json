@@ -1,0 +1,8 @@
+{
+  "name": "cadfs",
+  "version-string": "0.1.0",
+  "dependencies": [
+    "pybind11",
+    "nlohmann-json"
+  ]
+}
