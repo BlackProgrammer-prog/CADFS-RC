@@ -9,7 +9,7 @@
 namespace cadfs {
     SearchResult cadfs_next_search (
             const GridMap& map,
-            const IterationLog& instance,
+            const Instance& instance,
             const Config& config,
             const ExpertFusion& fusion,
             const ConfidenceEstimator& confidence,
