@@ -6,6 +6,13 @@
 #include "cadfs/search_astar.hpp"
 #include "cadfs/search_cadfs.hpp"
 #include "cadfs/search_focal.hpp"
+#include "cadfs/confidence.hpp"
+#include "cadfs/controller.hpp"
+#include "cadfs/expert.hpp"
+#include "cadfs/search_cadfs_next.hpp"
+
+#include <memory>
+
 
 namespace py = pybind11;
 using namespace cadfs;
@@ -103,4 +110,179 @@ PYBIND11_MODULE(cadfs_engine, mod) {
         return result_to_dict(cadfs_search(m, ins, config_from_dict(cfg), *model, tau_c));
     }, py::arg("map"), py::arg("start"), py::arg("goal"), py::arg("config"),
        py::arg("model"), py::arg("tau_c") = 0.05);
-}
+
+    mod.def(
+            "run_cadfs_next",
+            [](const GridMap& map,
+               py::tuple start,
+               py::tuple goal,
+               const py::dict& cfg_dict,
+               std::shared_ptr<GuidanceModel> model) {
+
+                if (!model) {
+                    throw py::value_error(
+                            "run_cadfs_next requires a guidance model");
+                }
+
+                Config cfg = config_from_dict(cfg_dict);
+
+                Instance instance{
+                        start[0].cast<int>(),
+                        start[1].cast<int>(),
+                        goal[0].cast<int>(),
+                        goal[1].cast<int>()
+                };
+
+                auto get_double =
+                        [&](const char* key, double default_value) {
+                            return cfg_dict.contains(key)
+                                   ? cfg_dict[key].cast<double>()
+                                   : default_value;
+                        };
+
+                auto get_string =
+                        [&](const char* key,
+                            const std::string& default_value) {
+                            return cfg_dict.contains(key)
+                                   ? cfg_dict[key].cast<std::string>()
+                                   : default_value;
+                        };
+
+                std::vector<std::shared_ptr<const Expert>> experts;
+
+                experts.push_back(
+                        std::make_shared<GeometricExpert>(*model));
+
+                experts.push_back(
+                        std::make_shared<TopologicalExpert>(
+                                cfg.connectivity));
+
+                experts.push_back(
+                        std::make_shared<GoalDistanceExpert>());
+
+                std::vector<double> expert_weights{
+                        1.0, 1.0, 1.0
+                };
+
+                if (cfg_dict.contains("expert_weights")) {
+                    expert_weights =
+                            cfg_dict["expert_weights"]
+                                    .cast<std::vector<double>>();
+                }
+
+                ExpertFusion fusion(
+                        std::move(experts),
+                        std::move(expert_weights),
+                        DisagreementMetric::Variance);
+
+                CompositeConfidence confidence(
+                        get_double("confidence_intra_weight", 1.0),
+                        get_double("confidence_inter_weight", 1.0),
+                        get_double("confidence_risk_weight", 0.0),
+                        get_double("confidence_reference_weight", 0.0),
+                        get_double("confidence_ood_weight", 0.0),
+                        get_double("confidence_temperature", 0.05));
+
+                const std::string controller_name =
+                        get_string(
+                                "next_controller",
+                                "multiplicative");
+
+                std::unique_ptr<FocalWidthController> controller;
+
+                if (controller_name ==
+                    std::string({'f', 'i', 'x', 'e', 'd'})) {
+                    controller = std::make_unique<FixedController>(
+                            cfg.tuned_fixed_w);
+                }
+
+                if (controller_name ==
+                    std::string({'m', 'l', 'p'})) {
+                    const std::string w1_key(
+                            {'m', 'l', 'p', '_', 'w', '1'});
+                    const std::string b1_key(
+                            {'m', 'l', 'p', '_', 'b', '1'});
+                    const std::string w2_key(
+                            {'m', 'l', 'p', '_', 'w', '2'});
+                    const std::string b2_key(
+                            {'m', 'l', 'p', '_', 'b', '2'});
+                    const std::string actions_key(
+                            {'m', 'l', 'p', '_', 'a', 'c', 't', 'i', 'o', 'n', 's'});
+
+                    auto required_vector = [&](const std::string& key) {
+                        const py::str py_key(key);
+                        if (!cfg_dict.contains(py_key)) {
+                            throw py::key_error(key.c_str());
+                        }
+                        return cfg_dict[py_key].cast<std::vector<double>>();
+                    };
+
+                    std::vector<double> w1 = required_vector(w1_key);
+                    std::vector<double> b1 = required_vector(b1_key);
+                    std::vector<double> w2 = required_vector(w2_key);
+                    std::vector<double> b2 = required_vector(b2_key);
+                    std::vector<double> actions;
+
+                    const py::str py_actions_key(actions_key);
+                    if (cfg_dict.contains(py_actions_key)) {
+                        actions = cfg_dict[py_actions_key]
+                                .cast<std::vector<double>>();
+                    }
+
+                    const MLPControllerMode mode = actions.empty()
+                            ? MLPControllerMode::Regression
+                            : MLPControllerMode::Classification;
+                    const std::size_t hidden_size = b1.size();
+
+                    controller = std::make_unique<MLPController>(
+                            std::move(w1), std::move(b1),
+                            std::move(w2), std::move(b2),
+                            14, hidden_size, std::move(actions), mode);
+                }
+
+                if (!controller) {
+
+                if (controller_name == "linear") {
+                    controller =
+                            std::make_unique<LinearController>(
+                                    get_double("lin_a", 1.0 / 3.0),
+                                    get_double("lin_b", 1.0 / 3.0),
+                                    get_double("lin_c", 1.0 / 3.0));
+
+                } else if (controller_name == "threshold") {
+                    controller =
+                            std::make_unique<ThresholdController>(
+                                    get_double(
+                                            "controller_confidence_threshold",
+                                            0.3),
+                                    get_double(
+                                            "controller_disagreement_threshold",
+                                            0.5),
+                                    get_double(
+                                            "controller_conservative_width",
+                                            1.0));
+
+                } else {
+                    controller =
+                            std::make_unique<
+                                    MultiplicativeController>();
+                }
+
+                }
+
+                SearchResult result =
+                        cadfs_next_search(
+                                map,
+                                instance,
+                                cfg,
+                                fusion,
+                                confidence,
+                                *controller);
+
+                return result_to_dict(result);
+            },
+            py::arg("map"),
+            py::arg("start"),
+            py::arg("goal"),
+            py::arg("config"),
+            py::arg("model"));}
