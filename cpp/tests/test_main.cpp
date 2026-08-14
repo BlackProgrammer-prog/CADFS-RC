@@ -6,13 +6,35 @@
 #include "cadfs/search_astar.hpp"
 #include "cadfs/search_cadfs.hpp"
 #include "cadfs/search_focal.hpp"
+#include "cadfs/confidence.hpp"
+#include "cadfs/controller.hpp"
+#include "cadfs/expert.hpp"
+#include "cadfs/search_cadfs_next.hpp"
+
 #include <cmath>
 #include <cstdio>
 #include <random>
+#include <limits>
+#include <memory>
 
 using namespace cadfs;
 static int fails = 0;
+
+class BrokenController final : public FocalWidthController {
+public:
+    explicit BrokenController(double output) : output_(output) {}
+
+    double raw_width(const SearchState&, double) const override {
+        return output_;
+    }
+
+private:
+    double output_;
+};
 #define CHECK(cond, msg) do { if (!(cond)) { ++fails; std::printf("FAIL: %s (%s:%d)\n", msg, __FILE__, __LINE__); } } while (0)
+
+
+
 
 static GridMap random_map(int w, int h, double density, std::mt19937& rng) {
     std::vector<uint8_t> occ((size_t)w * h, 0);
@@ -37,6 +59,43 @@ int main() {
     std::mt19937 rng(42);
     Config cfg; cfg.connectivity = 8; cfg.W = 2.0;
     cfg.h_min = 0.0; cfg.h_max = 64.0 * 1.5; // rough map-diagonal normalization
+
+    // Safety projection must be independent of every controller/model.
+    CHECK(SafetyProjection::project(-100.0, 2.0) == 1.0, __func__);
+    CHECK(SafetyProjection::project(100.0, 2.0) == 2.0, __func__);
+    CHECK(SafetyProjection::project(
+              std::numeric_limits<double>::quiet_NaN(), 2.0) == 1.0,
+          __func__);
+    CHECK(SafetyProjection::project(
+              std::numeric_limits<double>::infinity(), 2.0) == 1.0,
+          __func__);
+
+    {
+        SearchState state;
+        FixedController fixed(1.5);
+        CHECK(std::abs(fixed.raw_width(state, 2.0) - 1.5) < 1e-12,
+              __func__);
+
+        constexpr std::size_t input_size = 14;
+        constexpr std::size_t hidden_size = 2;
+        MLPController regression(
+                std::vector<double>(input_size * hidden_size, 0.0),
+                std::vector<double>(hidden_size, 0.0),
+                std::vector<double>(hidden_size, 0.0),
+                {1.5}, input_size, hidden_size, {},
+                MLPControllerMode::Regression);
+        CHECK(std::abs(regression.raw_width(state, 2.0) - 1.5) < 1e-12,
+              __func__);
+
+        MLPController classification(
+                std::vector<double>(input_size * hidden_size, 0.0),
+                std::vector<double>(hidden_size, 0.0),
+                std::vector<double>(2 * hidden_size, 0.0),
+                {0.0, 1.0}, input_size, hidden_size, {1.0, 2.0},
+                MLPControllerMode::Classification);
+        CHECK(std::abs(classification.raw_width(state, 2.0) - 2.0) < 1e-12,
+              __func__);
+    }
 
     // --- 1. map mechanics ---
     {
@@ -103,6 +162,57 @@ int main() {
         }
         Config nofb = cfg; nofb.fallback_enabled = false;
         Config noconf = cfg; noconf.confidence_enabled = false;
+
+        auto geometric = std::make_shared<GeometricExpert>(good);
+        auto topological = std::make_shared<TopologicalExpert>(cfg.connectivity);
+        auto distance = std::make_shared<GoalDistanceExpert>();
+        ExpertFusion fusion(
+                {geometric, topological, distance},
+                {1.0, 1.0, 1.0},
+                DisagreementMetric::Variance);
+        CompositeConfidence confidence_next(
+                1.0, 1.0, 0.0, 0.0, 0.0, 0.05);
+        MultiplicativeController next_controller;
+
+        SearchResult next = cadfs_next_search(
+                m, ins, cfg, fusion, confidence_next, next_controller);
+        CHECK(next.found, __func__);
+        CHECK(next.cost <= cfg.W * cstar + 1e-9, __func__);
+        CHECK(next.min_w >= 1.0 - 1e-12, __func__);
+        CHECK(next.max_w <= cfg.W + 1e-12, __func__);
+
+        int64_t logged_iterations = 0;
+        bool invalid_logged_width = false;
+        IterationLogger logger = [&](const IterationLog& log) {
+            ++logged_iterations;
+            if (log.controller_safe_output < 1.0 ||
+                log.controller_safe_output > cfg.W + 1e-12) {
+                invalid_logged_width = true;
+            }
+        };
+
+        SearchResult logged = cadfs_next_search(
+                m, ins, cfg, fusion, confidence_next,
+                next_controller, &logger);
+        CHECK(logged.found, __func__);
+        CHECK(logged_iterations == logged.expansions, __func__);
+        CHECK(!invalid_logged_width, __func__);
+
+        if (trial < 3) {
+            for (double bad_output : {
+                    -1000.0,
+                    1000.0,
+                    std::numeric_limits<double>::quiet_NaN(),
+                    std::numeric_limits<double>::infinity()}) {
+                BrokenController broken(bad_output);
+                SearchResult safe = cadfs_next_search(
+                        m, ins, cfg, fusion, confidence_next, broken);
+                CHECK(safe.found, __func__);
+                CHECK(safe.cost <= cfg.W * cstar + 1e-9, __func__);
+                CHECK(safe.min_w >= 1.0 - 1e-12, __func__);
+                CHECK(safe.max_w <= cfg.W + 1e-12, __func__);
+            }
+        }
         CHECK(cadfs_search(m, ins, nofb, bad, 0.05).cost <= cfg.W * cstar + 1e-9, "no-fallback bound");
         CHECK(cadfs_search(m, ins, noconf, bad, 0.05).cost <= cfg.W * cstar + 1e-9, "no-confidence bound");
     }
