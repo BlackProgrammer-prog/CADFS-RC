@@ -1,7 +1,5 @@
 #pragma once
 
-#include <algorithm>
-#include <cmath>
 #include <cstddef>
 #include <vector>
 
@@ -27,24 +25,7 @@ namespace cadfs {
         double branching_normalized = 0.0;
         double search_progress = 0.0;
 
-        std::vector<double> to_vector() const {
-            return {
-                    confidence,
-                    intra_uncertainty,
-                    inter_disagreement,
-                    expert_disagreement,
-                    structural_risk,
-                    fallback_frequency,
-                    open_size_normalized,
-                    base_focal_size_normalized,
-                    previous_focal_size_normalized,
-                    f_min_normalized,
-                    current_g_normalized,
-                    current_h_normalized,
-                    branching_normalized,
-                    search_progress
-            };
-        }
+        std::vector<double> to_vector() const;
     };
 
     class FocalWidthController {
@@ -59,40 +40,30 @@ namespace cadfs {
     class MultiplicativeController final
             : public FocalWidthController {
     public:
-        double raw_width(
-                const SearchState& state,
-                double maximum_width) const override {
-
-            return 1.0 +
-                   (maximum_width - 1.0) *
-                   state.confidence *
-                   (1.0 - state.structural_risk) *
-                   (1.0 - state.fallback_frequency);
-        }
+        double raw_width(const SearchState& state,
+                         double maximum_width) const override;
     };
 
     class LinearController final : public FocalWidthController {
     public:
-        LinearController(double a, double b, double c)
-                : a_(a), b_(b), c_(c) {}
+        LinearController(double a, double b, double c);
 
-        double raw_width(
-                const SearchState& state,
-                double maximum_width) const override {
-
-            const double score =
-                    a_ * state.confidence +
-                    b_ * (1.0 - state.structural_risk) +
-                    c_ * (1.0 - state.fallback_frequency);
-
-            return 1.0 +
-                   (maximum_width - 1.0) * score;
-        }
+        double raw_width(const SearchState& state,
+                         double maximum_width) const override;
 
     private:
         double a_;
         double b_;
         double c_;
+    };
+
+    class FixedController final : public FocalWidthController {
+    public:
+        explicit FixedController(double width);
+        double raw_width(const SearchState& state,
+                         double maximum_width) const override;
+    private:
+        double width_;
     };
 
     class ThresholdController final
@@ -101,23 +72,10 @@ namespace cadfs {
         ThresholdController(
                 double confidence_threshold,
                 double disagreement_threshold,
-                double conservative_width)
-                : confidence_threshold_(confidence_threshold),
-                  disagreement_threshold_(disagreement_threshold),
-                  conservative_width_(conservative_width) {}
+                double conservative_width);
 
-        double raw_width(
-                const SearchState& state,
-                double maximum_width) const override {
-
-            if (state.confidence < confidence_threshold_ ||
-                state.inter_disagreement >
-                disagreement_threshold_) {
-                return conservative_width_;
-            }
-
-            return maximum_width;
-        }
+        double raw_width(const SearchState& state,
+                         double maximum_width) const override;
 
     private:
         double confidence_threshold_;
@@ -125,23 +83,40 @@ namespace cadfs {
         double conservative_width_;
     };
 
+    enum class MLPControllerMode {
+        Regression,
+        Classification
+    };
+
+    class MLPController final : public FocalWidthController {
+    public:
+        MLPController(
+                std::vector<double> input_hidden_weights,
+                std::vector<double> hidden_bias,
+                std::vector<double> hidden_output_weights,
+                std::vector<double> output_bias,
+                std::size_t input_size,
+                std::size_t hidden_size,
+                std::vector<double> actions,
+                MLPControllerMode mode);
+
+        double raw_width(const SearchState& state,
+                         double maximum_width) const override;
+
+    private:
+        std::vector<double> w1_;
+        std::vector<double> b1_;
+        std::vector<double> w2_;
+        std::vector<double> b2_;
+        std::size_t input_size_;
+        std::size_t hidden_size_;
+        std::vector<double> actions_;
+        MLPControllerMode mode_;
+    };
+
     class SafetyProjection {
     public:
-        static double project(
-                double raw_width,
-                double maximum_width) {
-
-            if (!std::isfinite(raw_width)) {
-                return 1.0;
-            }
-
-            maximum_width = std::max(1.0, maximum_width);
-
-            return std::clamp(
-                    raw_width,
-                    1.0,
-                    maximum_width);
-        }
+        static double project(double raw_width, double maximum_width);
     };
 
 } // namespace cadfs
