@@ -1,6 +1,7 @@
-#include "cadfs/search_cadfs.hpp"
-#include "cadfs/heuristics.hpp"
-#include "cadfs/risk.hpp"
+#include <cadfs/search_cadfs.hpp>
+#include <cadfs/heuristics.hpp>
+#include <cadfs/risk.hpp>
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <set>
@@ -50,7 +51,7 @@ SearchResult cadfs_search(const GridMap& m, const Instance& ins, const Config& c
     std::set<OpenKey> open;
     auto h = [&](int n) { return anchor_h(m, n, goal, cfg.connectivity); };
 
-    // per-node model/risk cache: eval each generated node at most once
+    // Legacy per-node cache: model output and handcrafted risk are static for a node.
     std::unordered_map<int, NodeEval> cache;
     auto eval_node = [&](int n) -> const NodeEval& {
         auto it = cache.find(n);
@@ -64,7 +65,6 @@ SearchResult cadfs_search(const GridMap& m, const Instance& ins, const Config& c
         return cache.emplace(n, e).first->second;
     };
 
-    // fallback sliding window of length K
     std::vector<uint8_t> fb_win((size_t)std::max(1, cfg.K), 0);
     int fb_pos = 0, fb_sum = 0;
     int64_t fb_events = 0;
@@ -79,7 +79,6 @@ SearchResult cadfs_search(const GridMap& m, const Instance& ins, const Config& c
     while (!open.empty()) {
         const double f_min = open.begin()->f;
 
-        // ---- Q_t: anchor Top-L prefix of B_t (Sec. 5.2 / 7.4) ----
         double C_t = 0, R_t = 0; int q = 0;
         const double base_bound = cfg.W * f_min;
         for (auto it = open.begin(); it != open.end() && it->f <= base_bound && q < cfg.L; ++it, ++q) {
@@ -89,13 +88,11 @@ SearchResult cadfs_search(const GridMap& m, const Instance& ins, const Config& c
         C_t = q ? C_t / q : 0.0; R_t = q ? R_t / q : 0.0;
         const double F_t = (double)fb_sum / (double)fb_win.size();
 
-        // ---- adaptive width ----
         const double w_t = controller_width(cfg, C_t, R_t, F_t);
         ++iters; sum_w += w_t; min_w = std::min(min_w, w_t); max_w = std::max(max_w, w_t);
         if (prev_w >= 0) sum_dw += std::abs(w_t - prev_w);
         prev_w = w_t; sum_C += C_t; sum_R += R_t;
 
-        // ---- FOCAL_t and learned-risk candidate ----
         const double bound = w_t * f_min;
         int n_learned = -1; double best_s = INF; bool goal_in_focal = false;
         for (auto it = open.begin(); it != open.end() && it->f <= bound; ++it) {
@@ -106,20 +103,18 @@ SearchResult cadfs_search(const GridMap& m, const Instance& ins, const Config& c
             if (s < best_s) { best_s = s; n_learned = n; }
         }
 
-        // ---- fixed threshold fallback rule (Sec. 7.5) ----
         int n_expand = n_learned; int fb = 0;
         if (!goal_in_focal && cfg.fallback_enabled) {
             const NodeEval& e = eval_node(n_learned);
             const double Rdev = risk_dev(e.H_L, h_ref_norm(h(n_learned), cfg));
             if (e.C < cfg.theta_c || e.R > cfg.theta_r || Rdev > cfg.theta_dev) {
-                n_expand = open.begin()->id; // anchor-best node, trivially in FOCAL
+                n_expand = open.begin()->id;
                 fb = 1; ++fb_events;
             }
         }
         fb_sum += fb - fb_win[fb_pos]; fb_win[fb_pos] = (uint8_t)fb;
         fb_pos = (fb_pos + 1) % (int)fb_win.size();
 
-        // ---- expand ----
         const int u = n_expand;
         open.erase({fval[u], u});
         closed[u] = 1;
