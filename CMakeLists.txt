@@ -19,9 +19,13 @@ add_library(cadfs_core STATIC
         cpp/src/heuristics.cpp
         cpp/src/risk.cpp
         cpp/src/mlp.cpp
+        cpp/src/expert.cpp
+        cpp/src/confidence.cpp
+        cpp/src/controller.cpp
         cpp/src/search_astar.cpp
         cpp/src/search_focal.cpp
         cpp/src/search_cadfs.cpp
+        cpp/src/search_cadfs_next.cpp
         cpp/src/instance_io.cpp
 )
 target_include_directories(cadfs_core PUBLIC cpp/include)
