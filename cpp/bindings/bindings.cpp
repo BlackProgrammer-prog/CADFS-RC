@@ -78,6 +78,10 @@ PYBIND11_MODULE(cadfs_engine, mod) {
     py::class_<EnsembleGuidance, GuidanceModel, std::shared_ptr<EnsembleGuidance>>(mod, "EnsembleGuidance")
         .def(py::init<const std::string&>(), py::arg("path"))
         .def_property_readonly("members", &EnsembleGuidance::members)
+        .def_property_readonly("format_version", &EnsembleGuidance::format_version)
+        .def_property_readonly("patch_size", &EnsembleGuidance::patch_size)
+        .def_property_readonly("variance_scale", &EnsembleGuidance::variance_scale)
+        .def_property_readonly("variance_floor", &EnsembleGuidance::variance_floor)
         .def("raw_eval", [](const EnsembleGuidance& e, const GridMap& m,
                             int x, int y, int gx, int gy) {
             std::vector<float> outs;
@@ -270,14 +274,20 @@ PYBIND11_MODULE(cadfs_engine, mod) {
 
                 }
 
-                SearchResult result =
-                        cadfs_next_search(
-                                map,
-                                instance,
-                                cfg,
-                                fusion,
-                                confidence,
-                                *controller);
+                SearchResult result;
+                {
+                    // All Python objects have been converted above.  The
+                    // search and guidance model are read-only, so independent
+                    // validation instances can run concurrently.
+                    py::gil_scoped_release release;
+                    result = cadfs_next_search(
+                            map,
+                            instance,
+                            cfg,
+                            fusion,
+                            confidence,
+                            *controller);
+                }
 
                 return result_to_dict(result);
             },
