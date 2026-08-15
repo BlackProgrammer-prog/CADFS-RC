@@ -7,12 +7,26 @@
 
 namespace cadfs {
 
+struct GuidanceEvaluation {
+    double priority = 0.0;
+    double variance = 0.0;
+    int member_evaluations = 1;
+};
+
 // Learned-guidance interface. eval() returns the ensemble-mean normalized
 // priority H_L(n) in [0,1] and the ensemble variance sigma^2(n).
 struct GuidanceModel {
     virtual ~GuidanceModel() = default;
     virtual void eval(const GridMap& m, int node, int goal,
                       double& H_L, double& variance) const = 0;
+    // Detailed evaluation lets the search report the real cost of ensembles.
+    // Existing/custom models remain source-compatible through this default.
+    virtual GuidanceEvaluation eval_detailed(const GridMap& m, int node,
+                                             int goal) const {
+        GuidanceEvaluation result;
+        eval(m, node, goal, result.priority, result.variance);
+        return result;
+    }
 };
 
 // Confidence C(n) = exp(-sigma^2 / tau_c)  (paper Sec. 7.2)
