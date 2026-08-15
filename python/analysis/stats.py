@@ -21,6 +21,18 @@ def bootstrap_ci_mean_diff(a: np.ndarray, b: np.ndarray, n_boot=10000, seed=0):
     return float(np.percentile(means, 2.5)), float(np.percentile(means, 97.5))
 
 
+def paired_rank_biserial(a: np.ndarray, b: np.ndarray) -> float:
+    """Matched-pairs rank-biserial effect size in [-1, 1]."""
+    differences = np.asarray(a, dtype=float) - np.asarray(b, dtype=float)
+    differences = differences[~np.isclose(differences, 0.0)]
+    if len(differences) == 0:
+        return 0.0
+    ranks = st.rankdata(np.abs(differences))
+    positive = ranks[differences > 0].sum()
+    negative = ranks[differences < 0].sum()
+    return float((positive - negative) / (positive + negative))
+
+
 def spearman(x: np.ndarray, y: np.ndarray, n_boot=5000, seed=0):
     """Spearman rho with bootstrap 95% CI and p-value."""
     rho, p = st.spearmanr(x, y)
