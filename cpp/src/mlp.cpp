@@ -10,6 +10,42 @@ namespace cadfs {
 namespace {
 inline float relu(float x) { return x > 0.f ? x : 0.f; }
 
+inline float softplus(float x) {
+    if (x > 20.f) return x;
+    if (x < -20.f) return std::exp(x);
+    return std::log1p(std::exp(x));
+}
+
+inline double log1p_priority(double encoded) {
+    return -std::expm1(-std::max(0.0, encoded));
+}
+
+double line_obstacle_fraction(const GridMap& map,
+                              int x0, int y0, int x1, int y1) {
+    const int dx = std::abs(x1 - x0);
+    const int sx = x0 < x1 ? 1 : -1;
+    const int dy = -std::abs(y1 - y0);
+    const int sy = y0 < y1 ? 1 : -1;
+    int error = dx + dy;
+    int blocked = 0;
+    int total = 0;
+    while (true) {
+        ++total;
+        if (map.blocked(x0, y0)) ++blocked;
+        if (x0 == x1 && y0 == y1) break;
+        const int twice = 2 * error;
+        if (twice >= dy) {
+            error += dy;
+            x0 += sx;
+        }
+        if (twice <= dx) {
+            error += dx;
+            y0 += sy;
+        }
+    }
+    return static_cast<double>(blocked) / std::max(1, total);
+}
+
 // Conv3x3 pad1 + ReLU + MaxPool2 fused pipeline on a (C,H,W) buffer.
 void conv_relu(const ConvLayer& L, const std::vector<float>& in, int H, int W,
                std::vector<float>& out) {
@@ -85,7 +121,27 @@ EnsembleGuidance::EnsembleGuidance(const std::string& path) {
     std::string tok; int ver, K, hidden;
     f >> tok >> ver;
     if (tok != "CADFS_ENSEMBLE") throw std::runtime_error("bad magic");
+    if (ver != 1 && ver != 2)
+        throw std::runtime_error("unsupported ensemble format version");
+    format_version_ = ver;
     f >> tok >> K >> tok >> patch_ >> tok >> extra_ >> tok >> hidden;
+    if (K <= 0 || patch_ <= 0 || patch_ % 2 == 0 || extra_ <= 0 || hidden <= 0)
+        throw std::runtime_error("invalid ensemble dimensions");
+    if (format_version_ >= 2) {
+        std::string target;
+        f >> tok >> target;
+        if (tok != "TARGET" || target != "LOG1P")
+            throw std::runtime_error("unsupported ensemble target transform");
+        log1p_target_ = true;
+        f >> tok >> variance_scale_;
+        if (tok != "VARIANCE_SCALE" || !std::isfinite(variance_scale_) ||
+            variance_scale_ < 0.0)
+            throw std::runtime_error("invalid ensemble variance scale");
+        f >> tok >> variance_floor_;
+        if (tok != "VARIANCE_FLOOR" || !std::isfinite(variance_floor_) ||
+            variance_floor_ < 0.0)
+            throw std::runtime_error("invalid ensemble variance floor");
+    }
     nets_.resize(K);
     auto read_floats = [&](std::vector<float>& v, size_t n) {
         v.resize(n);
@@ -93,17 +149,29 @@ EnsembleGuidance::EnsembleGuidance(const std::string& path) {
     };
     for (int k = 0; k < K; ++k) {
         int idx; f >> tok >> idx;                       // MEMBER i
+        if (tok != "MEMBER" || idx != k)
+            throw std::runtime_error("invalid ensemble member header");
         MemberNet& net = nets_[k];
         for (ConvLayer* c : {&net.c1, &net.c2}) {
             f >> tok >> c->cin >> c->cout;              // CONV cin cout
+            if (tok != "CONV" || c->cin <= 0 || c->cout <= 0)
+                throw std::runtime_error("invalid ensemble convolution layer");
             read_floats(c->w, (size_t)c->cout * c->cin * 9);
             read_floats(c->b, c->cout);
         }
         for (FcLayer* fc : {&net.f1, &net.f2}) {
             f >> tok >> fc->in >> fc->out;              // FC in out
+            if (tok != "FC" || fc->in <= 0 || fc->out <= 0)
+                throw std::runtime_error("invalid ensemble fully-connected layer");
             read_floats(fc->w, (size_t)fc->out * fc->in);
             read_floats(fc->b, fc->out);
         }
+        const int pooled = patch_ / 2 / 2;
+        const int expected_fc1 = net.c2.cout * pooled * pooled + extra_;
+        if (net.c1.cin != 1 || net.c2.cin != net.c1.cout ||
+            net.f1.in != expected_fc1 || net.f1.out != hidden ||
+            net.f2.in != hidden || net.f2.out != 1)
+            throw std::runtime_error("ensemble architecture does not match header");
     }
     if (!f) throw std::runtime_error("truncated ensemble file");
 }
@@ -124,27 +192,49 @@ void EnsembleGuidance::raw_eval(const GridMap& m, int node, int goal,
     const double dx = m.x_of(goal) - x, dy = m.y_of(goal) - y;
     const double adx = std::abs(dx), ady = std::abs(dy);
     static const double SQRT2 = 1.4142135623730951;
-    const float extra[4] = {
-        (float)(dx / diag), (float)(dy / diag),
-        (float)(std::hypot(dx, dy) / diag),
-        (float)(((adx + ady) + (SQRT2 - 2.0) * std::min(adx, ady)) / diag)};
+    std::vector<float> extra;
+    extra.reserve(static_cast<std::size_t>(extra_));
+    extra.push_back((float)(dx / diag));
+    extra.push_back((float)(dy / diag));
+    extra.push_back((float)(std::hypot(dx, dy) / diag));
+    extra.push_back((float)(((adx + ady) +
+        (SQRT2 - 2.0) * std::min(adx, ady)) / diag));
+    if (extra_ == 10) {
+        extra.push_back((float)line_obstacle_fraction(
+            m, x, y, m.x_of(goal), m.y_of(goal)));
+        extra.push_back((float)m.obstacle_density(node, 3));
+        extra.push_back((float)m.obstacle_density(node, 7));
+        extra.push_back((float)m.obstacle_density(node, 15));
+        extra.push_back((float)m.degree(node, 8) / 8.0f);
+        extra.push_back((float)m.obstacle_density(goal, 3));
+    } else if (extra_ != 4) {
+        throw std::runtime_error("unsupported ensemble feature count");
+    }
     outs.resize(nets_.size());
-    for (size_t k = 0; k < nets_.size(); ++k)
-        outs[k] = nets_[k].forward(patch, extra, extra_);
+    for (size_t k = 0; k < nets_.size(); ++k) {
+        const float linear = nets_[k].forward(patch, extra.data(), extra_);
+        outs[k] = log1p_target_ ? softplus(linear) : linear;
+    }
 }
 
 void EnsembleGuidance::eval(const GridMap& m, int node, int goal,
                             double& H_L, double& variance) const {
     std::vector<float> outs;
     raw_eval(m, node, goal, outs);
+    std::vector<double> priorities;
+    priorities.reserve(outs.size());
+    for (float value : outs) {
+        priorities.push_back(
+            log1p_target_ ? log1p_priority(value) : (double)value);
+    }
     double mu = 0;
-    for (float v : outs) mu += v;
+    for (double value : priorities) mu += value;
     mu /= outs.size();
     double var = 0;
-    for (float v : outs) var += (v - mu) * (v - mu);
+    for (double value : priorities) var += (value - mu) * (value - mu);
     var /= outs.size();
-    H_L = std::min(1.0, std::max(0.0, mu));   // normalized priority in [0,1]
-    variance = var;
+    H_L = std::min(1.0, std::max(0.0, mu));
+    variance = std::max(0.0, var * variance_scale_ + variance_floor_);
 }
 
 } // namespace cadfs
