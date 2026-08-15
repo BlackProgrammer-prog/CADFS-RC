@@ -115,7 +115,11 @@ float MemberNet::forward(const std::vector<float>& patch,
     return y;
 }
 
-EnsembleGuidance::EnsembleGuidance(const std::string& path) {
+EnsembleGuidance::EnsembleGuidance(const std::string& path,
+                                   int early_exit_members,
+                                   double early_exit_variance)
+        : early_exit_members_(early_exit_members),
+          early_exit_variance_(early_exit_variance) {
     std::ifstream f(path);
     if (!f) throw std::runtime_error("cannot open ensemble file: " + path);
     std::string tok; int ver, K, hidden;
@@ -174,32 +178,42 @@ EnsembleGuidance::EnsembleGuidance(const std::string& path) {
             throw std::runtime_error("ensemble architecture does not match header");
     }
     if (!f) throw std::runtime_error("truncated ensemble file");
+    if (early_exit_members_ == 1 || early_exit_members_ < 0)
+        throw std::invalid_argument("early_exit_members must be 0 or at least 2");
+    if (!std::isfinite(early_exit_variance_) ||
+        early_exit_variance_ < 0.0)
+        throw std::invalid_argument(
+            "early_exit_variance must be finite and non-negative");
+    if (early_exit_members_ >= static_cast<int>(nets_.size()))
+        early_exit_members_ = 0;
 }
 
-void EnsembleGuidance::raw_eval(const GridMap& m, int node, int goal,
-                                std::vector<float>& outs) const {
-    const int R = patch_ / 2;
+void build_guidance_inputs(const GridMap& m, int node, int goal,
+                           int patch_size, int extra_count,
+                           std::vector<float>& patch,
+                           std::vector<float>& extra) {
+    const int R = patch_size / 2;
     const int x = m.x_of(node), y = m.y_of(node);
-    std::vector<float> patch((size_t)patch_ * patch_, 1.f);   // OOB = obstacle
+    patch.assign((size_t)patch_size * patch_size, 1.f);
     for (int dy = -R; dy <= R; ++dy)
         for (int dx = -R; dx <= R; ++dx) {
             const int xx = x + dx, yy = y + dy;
             if (m.in_bounds(xx, yy))
-                patch[(size_t)(dy + R) * patch_ + (dx + R)] =
+                patch[(size_t)(dy + R) * patch_size + (dx + R)] =
                     m.blocked(xx, yy) ? 1.f : 0.f;
         }
     const double diag = std::hypot((double)m.width(), (double)m.height());
     const double dx = m.x_of(goal) - x, dy = m.y_of(goal) - y;
     const double adx = std::abs(dx), ady = std::abs(dy);
     static const double SQRT2 = 1.4142135623730951;
-    std::vector<float> extra;
-    extra.reserve(static_cast<std::size_t>(extra_));
+    extra.clear();
+    extra.reserve(static_cast<std::size_t>(extra_count));
     extra.push_back((float)(dx / diag));
     extra.push_back((float)(dy / diag));
     extra.push_back((float)(std::hypot(dx, dy) / diag));
     extra.push_back((float)(((adx + ady) +
         (SQRT2 - 2.0) * std::min(adx, ady)) / diag));
-    if (extra_ == 10) {
+    if (extra_count == 10) {
         extra.push_back((float)line_obstacle_fraction(
             m, x, y, m.x_of(goal), m.y_of(goal)));
         extra.push_back((float)m.obstacle_density(node, 3));
@@ -207,9 +221,22 @@ void EnsembleGuidance::raw_eval(const GridMap& m, int node, int goal,
         extra.push_back((float)m.obstacle_density(node, 15));
         extra.push_back((float)m.degree(node, 8) / 8.0f);
         extra.push_back((float)m.obstacle_density(goal, 3));
-    } else if (extra_ != 4) {
+    } else if (extra_count != 4) {
         throw std::runtime_error("unsupported ensemble feature count");
     }
+}
+
+void EnsembleGuidance::build_inputs(const GridMap& m, int node, int goal,
+                                    std::vector<float>& patch,
+                                    std::vector<float>& extra) const {
+    build_guidance_inputs(
+            m, node, goal, patch_, extra_, patch, extra);
+}
+
+void EnsembleGuidance::raw_eval(const GridMap& m, int node, int goal,
+                                std::vector<float>& outs) const {
+    std::vector<float> patch, extra;
+    build_inputs(m, node, goal, patch, extra);
     outs.resize(nets_.size());
     for (size_t k = 0; k < nets_.size(); ++k) {
         const float linear = nets_[k].forward(patch, extra.data(), extra_);
@@ -219,22 +246,58 @@ void EnsembleGuidance::raw_eval(const GridMap& m, int node, int goal,
 
 void EnsembleGuidance::eval(const GridMap& m, int node, int goal,
                             double& H_L, double& variance) const {
+    const GuidanceEvaluation result = eval_detailed(m, node, goal);
+    H_L = result.priority;
+    variance = result.variance;
+}
+
+GuidanceEvaluation EnsembleGuidance::eval_detailed(
+        const GridMap& m, int node, int goal) const {
+    std::vector<float> patch, extra;
+    build_inputs(m, node, goal, patch, extra);
+
+    const std::size_t initial = early_exit_members_ > 0
+            ? static_cast<std::size_t>(early_exit_members_)
+            : nets_.size();
     std::vector<float> outs;
-    raw_eval(m, node, goal, outs);
-    std::vector<double> priorities;
-    priorities.reserve(outs.size());
-    for (float value : outs) {
-        priorities.push_back(
-            log1p_target_ ? log1p_priority(value) : (double)value);
+    outs.reserve(nets_.size());
+    for (std::size_t k = 0; k < initial; ++k) {
+        const float linear = nets_[k].forward(patch, extra.data(), extra_);
+        outs.push_back(log1p_target_ ? softplus(linear) : linear);
     }
-    double mu = 0;
-    for (double value : priorities) mu += value;
-    mu /= outs.size();
-    double var = 0;
-    for (double value : priorities) var += (value - mu) * (value - mu);
-    var /= outs.size();
-    H_L = std::min(1.0, std::max(0.0, mu));
-    variance = std::max(0.0, var * variance_scale_ + variance_floor_);
+
+    auto summarize = [&]() {
+        GuidanceEvaluation summary;
+        double mean = 0.0;
+        for (float encoded : outs)
+            mean += log1p_target_
+                    ? log1p_priority(encoded) : static_cast<double>(encoded);
+        mean /= static_cast<double>(outs.size());
+        double var = 0.0;
+        for (float encoded : outs) {
+            const double value = log1p_target_
+                    ? log1p_priority(encoded) : static_cast<double>(encoded);
+            var += (value - mean) * (value - mean);
+        }
+        var /= static_cast<double>(outs.size());
+        summary.priority = std::clamp(mean, 0.0, 1.0);
+        summary.variance = std::max(
+                0.0, var * variance_scale_ + variance_floor_);
+        summary.member_evaluations = static_cast<int>(outs.size());
+        return summary;
+    };
+
+    GuidanceEvaluation result = summarize();
+    if (initial < nets_.size() &&
+        result.variance > early_exit_variance_) {
+        for (std::size_t k = initial; k < nets_.size(); ++k) {
+            const float linear = nets_[k].forward(
+                    patch, extra.data(), extra_);
+            outs.push_back(log1p_target_ ? softplus(linear) : linear);
+        }
+        result = summarize();
+    }
+    return result;
 }
 
 } // namespace cadfs
