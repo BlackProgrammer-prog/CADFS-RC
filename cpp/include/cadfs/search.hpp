@@ -53,6 +53,13 @@ struct SearchResult {
     double mean_w = 0.0, min_w = 0.0, max_w = 0.0;
     double mean_abs_dw = 0.0;       // oscillation statistic mean |w_t - w_{t-1}|
     double mean_C = 0.0, mean_R = 0.0;
+    // Learned-guidance systems telemetry. A model evaluation is one cache
+    // miss (one node); member evaluations expose adaptive/full ensembles.
+    int64_t model_eval_count = 0;
+    int64_t model_member_evals = 0;
+    int64_t model_cache_hits = 0;
+    double model_cache_hit_rate = 0.0;
+    double model_eval_time_ms = 0.0;
 };
 
 } // namespace cadfs
