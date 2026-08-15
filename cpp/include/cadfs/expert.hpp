@@ -27,6 +27,7 @@ namespace cadfs {
         double mean = 0.0;
         double intra_uncertainty = 0.0;
         bool available = true;
+        int member_evaluations = 0;
     };
 
     class Expert {
