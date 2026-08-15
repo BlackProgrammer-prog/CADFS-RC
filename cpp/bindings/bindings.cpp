@@ -3,6 +3,7 @@
 #include "cadfs/grid_map.hpp"
 #include "cadfs/guidance.hpp"
 #include "cadfs/mlp.hpp"
+#include "cadfs/fast_mlp.hpp"
 #include "cadfs/search_astar.hpp"
 #include "cadfs/search_cadfs.hpp"
 #include "cadfs/search_focal.hpp"
@@ -58,11 +59,41 @@ static py::dict result_to_dict(const SearchResult& r) {
     d["fallback_rate"] = r.fallback_rate;
     d["mean_w"] = r.mean_w; d["min_w"] = r.min_w; d["max_w"] = r.max_w;
     d["mean_abs_dw"] = r.mean_abs_dw; d["mean_C"] = r.mean_C; d["mean_R"] = r.mean_R;
+    d["model_eval_count"] = r.model_eval_count;
+    d["model_member_evals"] = r.model_member_evals;
+    d["model_cache_hits"] = r.model_cache_hits;
+    d["model_cache_hit_rate"] = r.model_cache_hit_rate;
+    d["model_eval_time_ms"] = r.model_eval_time_ms;
     return d;
+}
+
+static py::dict build_info() {
+    py::dict info;
+#ifdef NDEBUG
+    info["build_type"] = "Release";
+#else
+    info["build_type"] = "Debug";
+#endif
+#if defined(__clang__)
+    info["compiler"] = "clang";
+    info["compiler_version"] = __clang_version__;
+#elif defined(__GNUC__)
+    info["compiler"] = "gcc";
+    info["compiler_version"] = __VERSION__;
+#elif defined(_MSC_VER)
+    info["compiler"] = "msvc";
+    info["compiler_version"] = _MSC_VER;
+#else
+    info["compiler"] = "unknown";
+    info["compiler_version"] = "unknown";
+#endif
+    info["cxx_standard"] = __cplusplus;
+    return info;
 }
 
 PYBIND11_MODULE(cadfs_engine, mod) {
     mod.doc() = "CADFS C++ search core";
+    mod.def("build_info", &build_info);
 
     py::class_<GridMap>(mod, "GridMap")
         .def_static("from_ascii", &GridMap::from_ascii)
@@ -76,17 +107,37 @@ PYBIND11_MODULE(cadfs_engine, mod) {
         .def(py::init<double, double, uint64_t>(),
              py::arg("h_norm"), py::arg("noise"), py::arg("seed") = 1);
     py::class_<EnsembleGuidance, GuidanceModel, std::shared_ptr<EnsembleGuidance>>(mod, "EnsembleGuidance")
-        .def(py::init<const std::string&>(), py::arg("path"))
+        .def(py::init<const std::string&, int, double>(),
+             py::arg("path"), py::arg("early_exit_members") = 0,
+             py::arg("early_exit_variance") = 0.0)
         .def_property_readonly("members", &EnsembleGuidance::members)
         .def_property_readonly("format_version", &EnsembleGuidance::format_version)
         .def_property_readonly("patch_size", &EnsembleGuidance::patch_size)
         .def_property_readonly("variance_scale", &EnsembleGuidance::variance_scale)
         .def_property_readonly("variance_floor", &EnsembleGuidance::variance_floor)
+        .def_property_readonly("early_exit_members", &EnsembleGuidance::early_exit_members)
+        .def_property_readonly("early_exit_variance", &EnsembleGuidance::early_exit_variance)
         .def("raw_eval", [](const EnsembleGuidance& e, const GridMap& m,
                             int x, int y, int gx, int gy) {
             std::vector<float> outs;
             e.raw_eval(m, m.idx(x, y), m.idx(gx, gy), outs);
             return outs;
+        });
+    py::class_<FastEnsembleGuidance, GuidanceModel,
+               std::shared_ptr<FastEnsembleGuidance>>(mod, "FastEnsembleGuidance")
+        .def(py::init<const std::string&>(), py::arg("path"))
+        .def_property_readonly("heads", &FastEnsembleGuidance::heads)
+        .def_property_readonly("patch_size", &FastEnsembleGuidance::patch_size)
+        .def_property_readonly("extra_features", &FastEnsembleGuidance::extra_features)
+        .def_property_readonly("variance_scale", &FastEnsembleGuidance::variance_scale)
+        .def_property_readonly("variance_floor", &FastEnsembleGuidance::variance_floor)
+        .def("raw_eval", [](const FastEnsembleGuidance& model,
+                            const GridMap& map,
+                            int x, int y, int gx, int gy) {
+            std::vector<float> outputs;
+            model.raw_eval(
+                    map, map.idx(x, y), map.idx(gx, gy), outputs);
+            return outputs;
         });
 
     mod.def("dijkstra_all", [](const GridMap& m, int gx, int gy, int conn) {
