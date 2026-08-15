@@ -1,0 +1,16 @@
+profile: cpu
+training:
+  device: cpu
+  amp: false
+  compile: false
+  batch_size: 512
+  teacher_weight: 0.0
+  supervised_weight: 0.8
+  rank_weight: 0.2
+inference:
+  backend: fast
+  model: results/models/fast_ensemble.txt
+  search_device: cpu
+benchmark:
+  workers: 1
+  timing_mode: serial

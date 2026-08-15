@@ -1,0 +1,18 @@
+profile: gpu
+training:
+  device: cuda
+  amp: true
+  compile: true
+  batch_size: 2048
+  teacher_weight: 0.25
+  supervised_weight: 0.60
+  rank_weight: 0.15
+inference:
+  # Search uses the distilled C++ student. Scalar per-node CUDA launches are
+  # slower; a future native GPU backend must use batched K-Focal evaluation.
+  backend: fast
+  model: results/models/fast_ensemble.txt
+  search_device: cpu
+benchmark:
+  workers: 1
+  timing_mode: serial
