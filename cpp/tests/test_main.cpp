@@ -11,6 +11,7 @@
 #include "cadfs/expert.hpp"
 #include "cadfs/search_cadfs_next.hpp"
 #include "cadfs/mlp.hpp"
+#include "cadfs/fast_mlp.hpp"
 
 #include <cmath>
 #include <cstdio>
@@ -99,6 +100,48 @@ int main() {
               "v2 log1p target priority transform");
         CHECK(std::abs(variance - 0.125) < 1e-12,
               "v2 affine-calibrated variance floor");
+        std::filesystem::remove(path);
+    }
+
+    // Shared-backbone fast-student format and calibrated multi-head variance.
+    {
+        const auto path = std::filesystem::temp_directory_path() /
+                          "cadfs_fast_ensemble_test.txt";
+        std::ofstream out(path);
+        out << "CADFS_FAST_ENSEMBLE 1\n"
+            << "PATCH 3 EXTRA 4 HIDDEN1 2 HIDDEN2 2 HEADS 2 TARGET LOG1P "
+               "VARIANCE_SCALE 2 VARIANCE_FLOOR 0.25\n";
+        auto zero_fc = [&](int in, int outputs) {
+            out << "FC " << in << ' ' << outputs << '\n';
+            for (int i = 0; i < in * outputs; ++i) out << "0 ";
+            out << '\n';
+            for (int i = 0; i < outputs; ++i) out << "0 ";
+            out << '\n';
+        };
+        zero_fc(13, 2);
+        zero_fc(2, 2);
+        for (int head = 0; head < 2; ++head) {
+            out << "HEAD " << head << '\n';
+            zero_fc(2, 1);
+        }
+        out.close();
+
+        FastEnsembleGuidance model(path.string());
+        GridMap map = GridMap::from_ascii(
+                {".....", ".....", ".....", ".....", "....."});
+        std::vector<float> raw;
+        model.raw_eval(map, map.idx(1, 1), map.idx(4, 4), raw);
+        CHECK(raw.size() == 2, "fast ensemble head count");
+        CHECK(std::abs(raw[0] - std::log(2.0)) < 1e-6,
+              "fast ensemble Softplus parity");
+        const GuidanceEvaluation evaluation = model.eval_detailed(
+                map, map.idx(1, 1), map.idx(4, 4));
+        CHECK(std::abs(evaluation.priority - 0.5) < 1e-6,
+              "fast ensemble priority transform");
+        CHECK(std::abs(evaluation.variance - 0.25) < 1e-12,
+              "fast ensemble calibrated variance");
+        CHECK(evaluation.member_evaluations == 2,
+              "fast ensemble head telemetry");
         std::filesystem::remove(path);
     }
 
@@ -222,6 +265,15 @@ int main() {
         CHECK(next.cost <= cfg.W * cstar + 1e-9, __func__);
         CHECK(next.min_w >= 1.0 - 1e-12, __func__);
         CHECK(next.max_w <= cfg.W + 1e-12, __func__);
+        CHECK(next.model_eval_count > 0, "model evaluations are counted");
+        CHECK(next.model_member_evals == next.model_eval_count,
+              "single-member detailed telemetry");
+        CHECK(next.model_cache_hits > 0, "guidance cache is exercised");
+        CHECK(next.model_cache_hit_rate > 0.0 &&
+              next.model_cache_hit_rate <= 1.0,
+              "guidance cache hit rate is valid");
+        CHECK(next.model_eval_time_ms >= 0.0,
+              "model evaluation time is valid");
 
         int64_t logged_iterations = 0;
         bool invalid_logged_width = false;
