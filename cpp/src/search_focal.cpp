@@ -38,12 +38,24 @@ SearchResult focal_fixed(const GridMap& m, const Instance& ins, const Config& cf
     std::unordered_map<int, double> scache;
     auto secondary = [&](int n) {
         auto it = scache.find(n);
-        if (it != scache.end()) return it->second;
+        if (it != scache.end()) {
+            if (model) ++res.model_cache_hits;
+            return it->second;
+        }
         double s;
         if (model) {
-            double H_L, var; model->eval(m, n, goal, H_L, var);
-            const double R = risk_combined(m, n, H_L, h(n), cfg, 0);
-            s = cfg.alpha * H_L + cfg.beta * R;
+            const auto eval_started = std::chrono::steady_clock::now();
+            const GuidanceEvaluation evaluation =
+                    model->eval_detailed(m, n, goal);
+            res.model_eval_time_ms +=
+                    std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() -
+                        eval_started).count();
+            ++res.model_eval_count;
+            res.model_member_evals += evaluation.member_evaluations;
+            const double R = risk_combined(
+                    m, n, evaluation.priority, h(n), cfg, 0);
+            s = cfg.alpha * evaluation.priority + cfg.beta * R;
         } else {
             s = h(n);
         }
@@ -77,10 +89,13 @@ SearchResult focal_fixed(const GridMap& m, const Instance& ins, const Config& cf
         const int k = m.neighbors(u, cfg.connectivity, nbr, nc);
         for (int i = 0; i < k; ++i) {
             const int v = nbr[i];
-            if (closed[v]) continue;
             const double t = g[u] + nc[i];
             if (t < g[v]) {
-                if (g[v] < INF) open.erase({fval[v], v});
+                if (g[v] < INF && !closed[v])
+                    open.erase({fval[v], v});
+                // Focal ordering is not f-ordering. A previously expanded
+                // state can therefore receive a better path and must reopen.
+                closed[v] = 0;
                 g[v] = t; fval[v] = t + h(v); parent[v] = u;
                 open.insert({fval[v], v});
                 ++res.generated;
@@ -89,6 +104,9 @@ SearchResult focal_fixed(const GridMap& m, const Instance& ins, const Config& cf
     }
     res.runtime_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - t0).count();
+    const int64_t requests = res.model_eval_count + res.model_cache_hits;
+    res.model_cache_hit_rate = requests > 0
+            ? static_cast<double>(res.model_cache_hits) / requests : 0.0;
     return res;
 }
 
