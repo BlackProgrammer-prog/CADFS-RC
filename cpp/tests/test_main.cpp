@@ -10,9 +10,12 @@
 #include "cadfs/controller.hpp"
 #include "cadfs/expert.hpp"
 #include "cadfs/search_cadfs_next.hpp"
+#include "cadfs/mlp.hpp"
 
 #include <cmath>
 #include <cstdio>
+#include <filesystem>
+#include <fstream>
 #include <random>
 #include <limits>
 #include <memory>
@@ -59,6 +62,45 @@ int main() {
     std::mt19937 rng(42);
     Config cfg; cfg.connectivity = 8; cfg.W = 2.0;
     cfg.h_min = 0.0; cfg.h_max = 64.0 * 1.5; // rough map-diagonal normalization
+
+    // Version-2 ensemble contract: a zero linear output becomes softplus(0)
+    // = log(2), which maps to priority 1-exp(-log(2)) = 0.5.  Variance is
+    // calibrated after the per-member bounded transform.
+    {
+        const auto path = std::filesystem::temp_directory_path() /
+                          "cadfs_ensemble_v2_test.txt";
+        std::ofstream out(path);
+        out << "CADFS_ENSEMBLE 2\n"
+            << "K 1 PATCH 7 EXTRA 4 HIDDEN 1 TARGET LOG1P VARIANCE_SCALE 3 "
+               "VARIANCE_FLOOR 0.125\n"
+            << "MEMBER 0\n"
+            << "CONV 1 1\n"
+            << "0 0 0 0 0 0 0 0 0\n0\n"
+            << "CONV 1 1\n"
+            << "0 0 0 0 0 0 0 0 0\n0\n"
+            << "FC 5 1\n"
+            << "0 0 0 0 0\n0\n"
+            << "FC 1 1\n"
+            << "0\n0\n";
+        out.close();
+
+        EnsembleGuidance model(path.string());
+        GridMap map = GridMap::from_ascii({
+            ".......", ".......", ".......", ".......",
+            ".......", ".......", "......."});
+        std::vector<float> raw;
+        model.raw_eval(map, map.idx(1, 1), map.idx(5, 5), raw);
+        CHECK(raw.size() == 1, "v2 ensemble member count");
+        CHECK(std::abs(raw[0] - std::log(2.0)) < 1e-6,
+              "v2 C++ Softplus parity");
+        double priority = 0.0, variance = -1.0;
+        model.eval(map, map.idx(1, 1), map.idx(5, 5), priority, variance);
+        CHECK(std::abs(priority - 0.5) < 1e-6,
+              "v2 log1p target priority transform");
+        CHECK(std::abs(variance - 0.125) < 1e-12,
+              "v2 affine-calibrated variance floor");
+        std::filesystem::remove(path);
+    }
 
     // Safety projection must be independent of every controller/model.
     CHECK(SafetyProjection::project(-100.0, 2.0) == 1.0, __func__);
