@@ -1,0 +1,39 @@
+engine: /home/parham/mind/CADFS-RC/cmake-build-release/cadfs_engine.cpython-310-x86_64-linux-gnu.so
+validation instances: 300; workers: 8
+[expert    ] geometry                 exp=12277.43 runtime=  2212.66ms max-ratio=1.6307
+              wall=87.9s workers=8
+[expert    ] geometry_topology        exp=11283.24 runtime=  2289.38ms max-ratio=1.6612
+              wall=92.1s workers=8
+[expert    ] geometry_goal            exp=11007.55 runtime=  2003.25ms max-ratio=1.4742
+              wall=80.0s workers=8
+[expert    ] uniform                  exp=12047.87 runtime=  2112.68ms max-ratio=1.7151
+              wall=83.9s workers=8
+[confidence] intra=1,inter=0,tau=0.002 exp= 2715.59 runtime=  2569.56ms max-ratio=1.0000
+              wall=102.6s workers=8
+[confidence] intra=1,inter=0,tau=0.01 exp= 6841.66 runtime=  2155.44ms max-ratio=1.3365
+              wall=86.4s workers=8
+[confidence] intra=1,inter=0,tau=0.05 exp=12672.65 runtime=  1828.43ms max-ratio=1.4835
+              wall=74.0s workers=8
+[confidence] intra=0,inter=1,tau=0.002 exp= 4054.61 runtime=  2240.50ms max-ratio=1.3878
+              wall=89.4s workers=8
+[confidence] intra=0,inter=1,tau=0.01 exp= 6718.35 runtime=  2176.12ms max-ratio=1.4927
+              wall=87.0s workers=8
+[confidence] intra=0,inter=1,tau=0.05 exp=11978.17 runtime=  1872.08ms max-ratio=1.4927
+              wall=74.9s workers=8
+[confidence] intra=1,inter=1,tau=0.002 exp= 2715.59 runtime=  2569.37ms max-ratio=1.0000
+              wall=102.5s workers=8
+[confidence] intra=1,inter=1,tau=0.01 exp= 4826.90 runtime=  2245.52ms max-ratio=1.3304
+              wall=89.9s workers=8
+[confidence] intra=1,inter=1,tau=0.05 exp=11007.55 runtime=  2019.37ms max-ratio=1.4742
+              wall=80.6s workers=8
+[controller] multiplicative           exp= 2715.59 runtime=  2580.18ms max-ratio=1.0000
+              wall=102.8s workers=8
+[controller] linear                   exp= 2715.59 runtime=  2709.64ms max-ratio=1.0000
+              wall=107.8s workers=8
+[controller] threshold-low            exp= 2715.59 runtime=  2585.32ms max-ratio=1.0000
+              wall=103.1s workers=8
+[controller] threshold-mid            exp= 2715.59 runtime=  2688.53ms max-ratio=1.0000
+              wall=106.9s workers=8
+[controller] fixed-wstar              exp= 2715.59 runtime=  2701.14ms max-ratio=1.0000
+              wall=107.4s workers=8
+selected -> /home/parham/mind/CADFS-RC/results/models/tuned_next.json

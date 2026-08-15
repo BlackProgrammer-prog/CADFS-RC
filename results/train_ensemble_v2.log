@@ -1,0 +1,159 @@
+[device] using cpu (CPU)
+training samples: train=108,000, train_structural=216,000
+validation samples: val=54,000, val_structural=108,300
+  member 0 epoch  1/80 train 0.032551 val-random 0.002628 val-struct 0.042184 score 0.044424 lr 3.00e-04
+  member 0 epoch  2/80 train 0.024694 val-random 0.000661 val-struct 0.040784 score 0.042857 lr 3.00e-04
+  member 0 epoch  3/80 train 0.023597 val-random 0.000732 val-struct 0.041790 score 0.043916 lr 3.00e-04
+  member 0 epoch  4/80 train 0.023261 val-random 0.000808 val-struct 0.041054 score 0.043147 lr 3.00e-04
+  member 0 epoch  5/80 train 0.023365 val-random 0.000517 val-struct 0.041360 score 0.043454 lr 3.00e-04
+  member 0 epoch  6/80 train 0.022978 val-random 0.000660 val-struct 0.039947 score 0.041978 lr 3.00e-04
+  member 0 epoch  7/80 train 0.022737 val-random 0.000520 val-struct 0.041165 score 0.043249 lr 3.00e-04
+  member 0 epoch  8/80 train 0.022904 val-random 0.000397 val-struct 0.040207 score 0.042238 lr 3.00e-04
+  member 0 epoch  9/80 train 0.022419 val-random 0.000535 val-struct 0.040777 score 0.042842 lr 3.00e-04
+  member 0 epoch 10/80 train 0.022273 val-random 0.000634 val-struct 0.041028 score 0.043111 lr 1.50e-04
+  member 0 epoch 11/80 train 0.022462 val-random 0.000429 val-struct 0.040535 score 0.042584 lr 1.50e-04
+  member 0 epoch 12/80 train 0.022060 val-random 0.000434 val-struct 0.040684 score 0.042740 lr 1.50e-04
+  member 0 epoch 13/80 train 0.021822 val-random 0.000534 val-struct 0.039612 score 0.041620 lr 1.50e-04
+  member 0 epoch 14/80 train 0.022003 val-random 0.000457 val-struct 0.039954 score 0.041974 lr 1.50e-04
+  member 0 epoch 15/80 train 0.021811 val-random 0.000510 val-struct 0.039957 score 0.041980 lr 1.50e-04
+  member 0 epoch 16/80 train 0.021881 val-random 0.000460 val-struct 0.040792 score 0.042854 lr 1.50e-04
+  member 0 epoch 17/80 train 0.021777 val-random 0.000474 val-struct 0.039891 score 0.041909 lr 7.50e-05
+  member 0 epoch 18/80 train 0.021650 val-random 0.000530 val-struct 0.040064 score 0.042094 lr 7.50e-05
+  member 0 epoch 19/80 train 0.021398 val-random 0.000797 val-struct 0.040113 score 0.042158 lr 7.50e-05
+  member 0 epoch 20/80 train 0.021482 val-random 0.000569 val-struct 0.040787 score 0.042855 lr 7.50e-05
+  member 0 epoch 21/80 train 0.021520 val-random 0.000585 val-struct 0.040644 score 0.042705 lr 3.75e-05
+  member 0 epoch 22/80 train 0.021313 val-random 0.000508 val-struct 0.040410 score 0.042456 lr 3.75e-05
+  member 0 epoch 23/80 train 0.021386 val-random 0.000515 val-struct 0.040067 score 0.042096 lr 3.75e-05
+  early stopping member 0: epoch=13 best-score=0.041620
+  member 1 epoch  1/80 train 0.033246 val-random 0.002380 val-struct 0.042705 score 0.044960 lr 3.00e-04
+  member 1 epoch  2/80 train 0.024929 val-random 0.001061 val-struct 0.041386 score 0.043509 lr 3.00e-04
+  member 1 epoch  3/80 train 0.023987 val-random 0.000608 val-struct 0.040503 score 0.042559 lr 3.00e-04
+  member 1 epoch  4/80 train 0.023591 val-random 0.000510 val-struct 0.040556 score 0.042609 lr 3.00e-04
+  member 1 epoch  5/80 train 0.023289 val-random 0.000479 val-struct 0.041217 score 0.043302 lr 3.00e-04
+  member 1 epoch  6/80 train 0.023059 val-random 0.000380 val-struct 0.041193 score 0.043272 lr 3.00e-04
+  member 1 epoch  7/80 train 0.023049 val-random 0.000506 val-struct 0.039950 score 0.041973 lr 3.00e-04
+  member 1 epoch  8/80 train 0.022889 val-random 0.000950 val-struct 0.041475 score 0.043596 lr 3.00e-04
+  member 1 epoch  9/80 train 0.022896 val-random 0.000532 val-struct 0.040540 score 0.042593 lr 3.00e-04
+  member 1 epoch 10/80 train 0.022579 val-random 0.000548 val-struct 0.040120 score 0.042153 lr 3.00e-04
+  member 1 epoch 11/80 train 0.022353 val-random 0.000420 val-struct 0.041522 score 0.043619 lr 1.50e-04
+  member 1 epoch 12/80 train 0.022367 val-random 0.000524 val-struct 0.040361 score 0.042405 lr 1.50e-04
+  member 1 epoch 13/80 train 0.022125 val-random 0.000471 val-struct 0.040420 score 0.042465 lr 1.50e-04
+  member 1 epoch 14/80 train 0.022066 val-random 0.000498 val-struct 0.040368 score 0.042411 lr 1.50e-04
+  member 1 epoch 15/80 train 0.022087 val-random 0.000460 val-struct 0.041014 score 0.043088 lr 7.50e-05
+  member 1 epoch 16/80 train 0.021985 val-random 0.000519 val-struct 0.040596 score 0.042652 lr 7.50e-05
+  member 1 epoch 17/80 train 0.021792 val-random 0.000407 val-struct 0.040932 score 0.042999 lr 7.50e-05
+  early stopping member 1: epoch=7 best-score=0.041973
+  member 2 epoch  1/80 train 0.031802 val-random 0.003916 val-struct 0.044345 score 0.046758 lr 3.00e-04
+  member 2 epoch  2/80 train 0.025186 val-random 0.001095 val-struct 0.041161 score 0.043274 lr 3.00e-04
+  member 2 epoch  3/80 train 0.023975 val-random 0.001344 val-struct 0.041291 score 0.043423 lr 3.00e-04
+  member 2 epoch  4/80 train 0.023307 val-random 0.000728 val-struct 0.040739 score 0.042812 lr 3.00e-04
+  member 2 epoch  5/80 train 0.023159 val-random 0.000485 val-struct 0.040541 score 0.042593 lr 3.00e-04
+  member 2 epoch  6/80 train 0.023003 val-random 0.000822 val-struct 0.040177 score 0.042227 lr 3.00e-04
+  member 2 epoch  7/80 train 0.022774 val-random 0.000578 val-struct 0.040762 score 0.042828 lr 3.00e-04
+  member 2 epoch  8/80 train 0.022702 val-random 0.000455 val-struct 0.040624 score 0.042678 lr 3.00e-04
+  member 2 epoch  9/80 train 0.022659 val-random 0.000441 val-struct 0.040350 score 0.042390 lr 3.00e-04
+  member 2 epoch 10/80 train 0.022258 val-random 0.000463 val-struct 0.040340 score 0.042380 lr 1.50e-04
+  member 2 epoch 11/80 train 0.022219 val-random 0.000477 val-struct 0.040626 score 0.042682 lr 1.50e-04
+  member 2 epoch 12/80 train 0.021893 val-random 0.000442 val-struct 0.040262 score 0.042297 lr 1.50e-04
+  member 2 epoch 13/80 train 0.022086 val-random 0.000701 val-struct 0.041455 score 0.043562 lr 1.50e-04
+  member 2 epoch 14/80 train 0.021823 val-random 0.000497 val-struct 0.040407 score 0.042452 lr 7.50e-05
+  member 2 epoch 15/80 train 0.021742 val-random 0.000531 val-struct 0.040045 score 0.042074 lr 7.50e-05
+  member 2 epoch 16/80 train 0.021706 val-random 0.000471 val-struct 0.040191 score 0.042224 lr 7.50e-05
+  member 2 epoch 17/80 train 0.021409 val-random 0.000475 val-struct 0.040957 score 0.043029 lr 7.50e-05
+  member 2 epoch 18/80 train 0.021334 val-random 0.000528 val-struct 0.040438 score 0.042486 lr 7.50e-05
+  member 2 epoch 19/80 train 0.021646 val-random 0.000456 val-struct 0.040528 score 0.042577 lr 3.75e-05
+  member 2 epoch 20/80 train 0.021539 val-random 0.000592 val-struct 0.040841 score 0.042913 lr 3.75e-05
+  member 2 epoch 21/80 train 0.021350 val-random 0.000485 val-struct 0.040499 score 0.042548 lr 3.75e-05
+  member 2 epoch 22/80 train 0.021351 val-random 0.000438 val-struct 0.040402 score 0.042444 lr 3.75e-05
+  member 2 epoch 23/80 train 0.021147 val-random 0.000502 val-struct 0.040754 score 0.042816 lr 1.87e-05
+  member 2 epoch 24/80 train 0.021219 val-random 0.000511 val-struct 0.040621 score 0.042678 lr 1.87e-05
+  member 2 epoch 25/80 train 0.021290 val-random 0.000459 val-struct 0.040427 score 0.042471 lr 1.87e-05
+  early stopping member 2: epoch=15 best-score=0.042074
+  member 3 epoch  1/80 train 0.032695 val-random 0.001814 val-struct 0.043430 score 0.045692 lr 3.00e-04
+  member 3 epoch  2/80 train 0.024961 val-random 0.001286 val-struct 0.041307 score 0.043436 lr 3.00e-04
+  member 3 epoch  3/80 train 0.024144 val-random 0.001003 val-struct 0.040541 score 0.042619 lr 3.00e-04
+  member 3 epoch  4/80 train 0.023695 val-random 0.000748 val-struct 0.040416 score 0.042474 lr 3.00e-04
+  member 3 epoch  5/80 train 0.023101 val-random 0.000538 val-struct 0.040741 score 0.042804 lr 3.00e-04
+  member 3 epoch  6/80 train 0.023178 val-random 0.000587 val-struct 0.040974 score 0.043052 lr 3.00e-04
+  member 3 epoch  7/80 train 0.022981 val-random 0.000823 val-struct 0.040272 score 0.042326 lr 3.00e-04
+  member 3 epoch  8/80 train 0.022684 val-random 0.000662 val-struct 0.040230 score 0.042275 lr 3.00e-04
+  member 3 epoch  9/80 train 0.022468 val-random 0.000686 val-struct 0.040420 score 0.042475 lr 3.00e-04
+  member 3 epoch 10/80 train 0.022573 val-random 0.000464 val-struct 0.040203 score 0.042236 lr 3.00e-04
+  member 3 epoch 11/80 train 0.022364 val-random 0.000408 val-struct 0.041174 score 0.043254 lr 3.00e-04
+  member 3 epoch 12/80 train 0.022337 val-random 0.000839 val-struct 0.040676 score 0.042751 lr 3.00e-04
+  member 3 epoch 13/80 train 0.022176 val-random 0.000499 val-struct 0.040104 score 0.042134 lr 3.00e-04
+  member 3 epoch 14/80 train 0.022045 val-random 0.000537 val-struct 0.041513 score 0.043615 lr 3.00e-04
+  member 3 epoch 15/80 train 0.021888 val-random 0.000491 val-struct 0.040163 score 0.042195 lr 3.00e-04
+  member 3 epoch 16/80 train 0.021816 val-random 0.000685 val-struct 0.040175 score 0.042218 lr 3.00e-04
+  member 3 epoch 17/80 train 0.021596 val-random 0.000557 val-struct 0.041738 score 0.043853 lr 1.50e-04
+  member 3 epoch 18/80 train 0.021391 val-random 0.000737 val-struct 0.040772 score 0.042848 lr 1.50e-04
+  member 3 epoch 19/80 train 0.021409 val-random 0.000679 val-struct 0.040102 score 0.042141 lr 1.50e-04
+  member 3 epoch 20/80 train 0.021299 val-random 0.000650 val-struct 0.041603 score 0.043716 lr 1.50e-04
+  member 3 epoch 21/80 train 0.021021 val-random 0.000811 val-struct 0.040740 score 0.042817 lr 7.50e-05
+  member 3 epoch 22/80 train 0.021113 val-random 0.000535 val-struct 0.040805 score 0.042872 lr 7.50e-05
+  member 3 epoch 23/80 train 0.021101 val-random 0.000751 val-struct 0.041036 score 0.043125 lr 7.50e-05
+  early stopping member 3: epoch=13 best-score=0.042134
+  member 4 epoch  1/80 train 0.032534 val-random 0.001502 val-struct 0.042357 score 0.044550 lr 3.00e-04
+  member 4 epoch  2/80 train 0.024838 val-random 0.001318 val-struct 0.041670 score 0.043819 lr 3.00e-04
+  member 4 epoch  3/80 train 0.024482 val-random 0.000882 val-struct 0.040880 score 0.042968 lr 3.00e-04
+  member 4 epoch  4/80 train 0.023695 val-random 0.000706 val-struct 0.040748 score 0.042821 lr 3.00e-04
+  member 4 epoch  5/80 train 0.023538 val-random 0.000684 val-struct 0.040800 score 0.042874 lr 3.00e-04
+  member 4 epoch  6/80 train 0.023092 val-random 0.000544 val-struct 0.041042 score 0.043121 lr 3.00e-04
+  member 4 epoch  7/80 train 0.023058 val-random 0.000531 val-struct 0.040445 score 0.042493 lr 3.00e-04
+  member 4 epoch  8/80 train 0.022931 val-random 0.000761 val-struct 0.040782 score 0.042860 lr 3.00e-04
+  member 4 epoch  9/80 train 0.022651 val-random 0.000775 val-struct 0.039605 score 0.041624 lr 3.00e-04
+  member 4 epoch 10/80 train 0.022554 val-random 0.001099 val-struct 0.040086 score 0.042145 lr 3.00e-04
+  member 4 epoch 11/80 train 0.022350 val-random 0.000623 val-struct 0.040324 score 0.042372 lr 3.00e-04
+  member 4 epoch 12/80 train 0.022279 val-random 0.000800 val-struct 0.040676 score 0.042750 lr 3.00e-04
+  member 4 epoch 13/80 train 0.022053 val-random 0.000767 val-struct 0.040460 score 0.042522 lr 1.50e-04
+  member 4 epoch 14/80 train 0.021874 val-random 0.000538 val-struct 0.039859 score 0.041879 lr 1.50e-04
+  member 4 epoch 15/80 train 0.022047 val-random 0.000609 val-struct 0.040655 score 0.042718 lr 1.50e-04
+  member 4 epoch 16/80 train 0.021741 val-random 0.000499 val-struct 0.040528 score 0.042580 lr 1.50e-04
+  member 4 epoch 17/80 train 0.021679 val-random 0.000507 val-struct 0.040989 score 0.043064 lr 7.50e-05
+  member 4 epoch 18/80 train 0.021725 val-random 0.000649 val-struct 0.040568 score 0.042629 lr 7.50e-05
+  member 4 epoch 19/80 train 0.021580 val-random 0.000705 val-struct 0.040284 score 0.042333 lr 7.50e-05
+  early stopping member 4: epoch=9 best-score=0.041624
+  member 5 epoch  1/80 train 0.032884 val-random 0.002368 val-struct 0.043266 score 0.045548 lr 3.00e-04
+  member 5 epoch  2/80 train 0.024883 val-random 0.002462 val-struct 0.042031 score 0.044256 lr 3.00e-04
+  member 5 epoch  3/80 train 0.024027 val-random 0.000653 val-struct 0.040753 score 0.042823 lr 3.00e-04
+  member 5 epoch  4/80 train 0.023553 val-random 0.000889 val-struct 0.042026 score 0.044172 lr 3.00e-04
+  member 5 epoch  5/80 train 0.023214 val-random 0.000741 val-struct 0.040418 score 0.042476 lr 3.00e-04
+  member 5 epoch  6/80 train 0.023161 val-random 0.000401 val-struct 0.040888 score 0.042952 lr 3.00e-04
+  member 5 epoch  7/80 train 0.022822 val-random 0.000681 val-struct 0.040639 score 0.042705 lr 3.00e-04
+  member 5 epoch  8/80 train 0.022655 val-random 0.000773 val-struct 0.040050 score 0.042091 lr 3.00e-04
+  member 5 epoch  9/80 train 0.022591 val-random 0.000435 val-struct 0.041113 score 0.043191 lr 3.00e-04
+  member 5 epoch 10/80 train 0.022560 val-random 0.000565 val-struct 0.039803 score 0.041821 lr 3.00e-04
+  member 5 epoch 11/80 train 0.022417 val-random 0.001227 val-struct 0.039140 score 0.041158 lr 3.00e-04
+  member 5 epoch 12/80 train 0.022462 val-random 0.000678 val-struct 0.039593 score 0.041606 lr 3.00e-04
+  member 5 epoch 13/80 train 0.022093 val-random 0.000464 val-struct 0.041165 score 0.043247 lr 3.00e-04
+  member 5 epoch 14/80 train 0.022163 val-random 0.000526 val-struct 0.041492 score 0.043592 lr 3.00e-04
+  member 5 epoch 15/80 train 0.022137 val-random 0.000783 val-struct 0.039475 score 0.041488 lr 1.50e-04
+  member 5 epoch 16/80 train 0.021517 val-random 0.000482 val-struct 0.040679 score 0.042738 lr 1.50e-04
+  member 5 epoch 17/80 train 0.021561 val-random 0.000563 val-struct 0.040055 score 0.042086 lr 1.50e-04
+  member 5 epoch 18/80 train 0.021621 val-random 0.000572 val-struct 0.040095 score 0.042128 lr 1.50e-04
+  member 5 epoch 19/80 train 0.021485 val-random 0.000488 val-struct 0.040621 score 0.042677 lr 7.50e-05
+  member 5 epoch 20/80 train 0.021288 val-random 0.000584 val-struct 0.039999 score 0.042029 lr 7.50e-05
+  member 5 epoch 21/80 train 0.021130 val-random 0.000506 val-struct 0.040481 score 0.042530 lr 7.50e-05
+  early stopping member 5: epoch=11 best-score=0.041158
+  member 6 epoch  1/80 train 0.031282 val-random 0.003407 val-struct 0.043086 score 0.045410 lr 3.00e-04
+  member 6 epoch  2/80 train 0.024514 val-random 0.001226 val-struct 0.041068 score 0.043183 lr 3.00e-04
+  member 6 epoch  3/80 train 0.023848 val-random 0.000931 val-struct 0.041570 score 0.043696 lr 3.00e-04
+  member 6 epoch  4/80 train 0.023264 val-random 0.000705 val-struct 0.039805 score 0.041830 lr 3.00e-04
+  member 6 epoch  5/80 train 0.023027 val-random 0.000714 val-struct 0.042263 score 0.044411 lr 3.00e-04
+  member 6 epoch  6/80 train 0.022780 val-random 0.000499 val-struct 0.043004 score 0.045179 lr 3.00e-04
+  member 6 epoch  7/80 train 0.022868 val-random 0.000437 val-struct 0.040071 score 0.042096 lr 3.00e-04
+  member 6 epoch  8/80 train 0.022498 val-random 0.000567 val-struct 0.040380 score 0.042428 lr 1.50e-04
+  member 6 epoch  9/80 train 0.022233 val-random 0.000479 val-struct 0.041311 score 0.043400 lr 1.50e-04
+  member 6 epoch 10/80 train 0.022010 val-random 0.000728 val-struct 0.040149 score 0.042193 lr 1.50e-04
+  member 6 epoch 11/80 train 0.022278 val-random 0.000516 val-struct 0.040142 score 0.042175 lr 1.50e-04
+  member 6 epoch 12/80 train 0.022010 val-random 0.000577 val-struct 0.040283 score 0.042326 lr 7.50e-05
+  member 6 epoch 13/80 train 0.021841 val-random 0.000505 val-struct 0.040527 score 0.042579 lr 7.50e-05
+  member 6 epoch 14/80 train 0.021677 val-random 0.000490 val-struct 0.040140 score 0.042171 lr 7.50e-05
+  early stopping member 6: epoch=4 best-score=0.041830
+calibration -> /home/parham/mind/CADFS-RC/results/models/calibration.json (variance=28.4v+0.00636)
+        split      n      mae     rmse  priority_mae  mean_priority_std  mean_calibrated_priority_std
+         test  54000 0.039179 0.049911      0.018135           0.012050                      0.103383
+shift_density  53283 0.060400 0.087229      0.034709           0.016323                      0.119828
+   shift_size  36000 0.108702 0.223320      0.041588           0.013286                      0.107923
+ shift_family 144600 0.905582 1.630040      0.110047           0.050516                      0.291243
+figures -> /home/parham/mind/CADFS-RC/results/figures
