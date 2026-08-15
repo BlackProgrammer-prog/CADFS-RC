@@ -2,7 +2,8 @@
 
 Families: random / maze / narrow-passage.
 Splits are MAP-LEVEL (a map appears in exactly one split) to prevent leakage.
-Shift sets: density shift, size shift, family shift (maze+narrow unseen at train).
+Structural training uses moderate maze/narrow parameters; shift_family reserves
+hard corridor/passage/clutter parameters for final testing.
 
 Outputs (relative to repo root):
   data/synthetic/<family>/<split>/<map_id>.map        MovingAI-format maps
@@ -16,8 +17,11 @@ from __future__ import annotations
 
 import argparse
 import csv
+import math
+import os
 import random
 import sys
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -105,22 +109,45 @@ def gen_narrow(w: int, h: int, passage: int, clutter: float,
 # ------------------------------- queries -----------------------------------
 
 def sample_queries(gm, rows: list[str], n_queries: int, rng: random.Random,
-                   min_frac: float = 0.30, max_tries: int = 400) -> list[tuple]:
-    """Valid (start, goal, C*) with d* >= min_frac * map diagonal."""
+                   min_frac: float = 0.30,
+                   max_goal_tries: int | None = None,
+                   starts_per_goal: int = 2) -> list[tuple]:
+    """Generate valid queries with exact C* using batched reverse Dijkstra.
+
+    The previous implementation ran a complete A* for every random pair,
+    including rejected pairs.  Dense maps therefore spent most of their time
+    proving that unsuitable pairs were disconnected or too close.  One reverse
+    Dijkstra gives the exact cost from every reachable start to a selected goal,
+    so several well-separated starts can be sampled from the same pass.
+    """
     w, h = gm.width, gm.height
     free = [(x, y) for y in range(h) for x in range(w) if rows[y][x] == "."]
     if len(free) < 2:
         return []
     diag = (w * w + h * h) ** 0.5
-    out, tries = [], 0
-    while len(out) < n_queries and tries < max_tries:
-        tries += 1
-        s, g = rng.choice(free), rng.choice(free)
-        if s == g:
-            continue
-        r = eng.run_astar(gm, s, g, CFG)  # optimal: weight=1, admissible anchor
-        if r["found"] and r["cost"] >= min_frac * diag:
-            out.append((s, g, r["cost"]))
+    max_goal_tries = max_goal_tries or max(16, n_queries * 4)
+    out: list[tuple] = []
+    used: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+    goals = free.copy()
+    rng.shuffle(goals)
+
+    for g in goals[:max_goal_tries]:
+        distances = eng.dijkstra_all(gm, g[0], g[1], CONN)
+        candidates = []
+        for s in free:
+            if s == g or (s, g) in used:
+                continue
+            cost = float(distances[s[1] * w + s[0]])
+            if math.isfinite(cost) and cost >= min_frac * diag:
+                candidates.append((s, cost))
+        rng.shuffle(candidates)
+
+        # Reuse the reverse search without letting one goal dominate a map.
+        for s, cost in candidates[:min(starts_per_goal, n_queries - len(out))]:
+            used.add((s, g))
+            out.append((s, g, cost))
+        if len(out) >= n_queries:
+            break
     return out
 
 
@@ -147,24 +174,95 @@ def save_map(path: Path, rows: list[str]) -> None:
         f.write("\n".join(rows) + "\n")
 
 
+def generate_map_task(task: dict) -> dict:
+    """Worker entry point; all inputs/outputs are process-serializable."""
+    retry_rng = random.Random(task["seed"])
+    for attempt in range(1, task["max_map_attempts"] + 1):
+        map_seed = retry_rng.randrange(2**31)
+        rng = random.Random(map_seed)
+        grid_rows = make_map(
+            task["family"], task["level"], task["size"], task["size"], rng)
+        gm = eng.GridMap.from_ascii(grid_rows)
+        queries = sample_queries(
+            gm, grid_rows, task["queries_per_map"],
+            random.Random(map_seed + 1),
+            starts_per_goal=task["starts_per_goal"])
+        if len(queries) == task["queries_per_map"]:
+            return {
+                **task,
+                "rows": grid_rows,
+                "queries": queries,
+                "density": round(density_of(grid_rows), 4),
+                "attempts": attempt,
+            }
+    raise RuntimeError(
+        f"could not generate {task['map_id']} after "
+        f"{task['max_map_attempts']} map attempts")
+
+
+def write_instances(split: str, records: list[dict]) -> Path:
+    inst_dir = ROOT / "data" / "instances"
+    inst_dir.mkdir(parents=True, exist_ok=True)
+    fields = ["map_id", "map_path", "start_x", "start_y", "goal_x", "goal_y",
+              "family", "density", "width", "height", "split", "optimal_cost"]
+    path = inst_dir / f"{split}.csv"
+    records.sort(key=lambda row: (
+        row["map_id"], row["start_x"], row["start_y"],
+        row["goal_x"], row["goal_y"]))
+    with path.open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(records)
+    return path
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--seed", type=int, default=1234)
     ap.add_argument("--maps-per-split", type=int, default=40)
     ap.add_argument("--queries-per-map", type=int, default=10)
+    ap.add_argument(
+        "--starts-per-goal", type=int, default=2,
+        help="queries sharing one reverse-Dijkstra goal (lower = more goal diversity)")
     ap.add_argument("--size", type=int, default=64)
     ap.add_argument("--shift-size", type=int, default=128)
+    ap.add_argument(
+        "--splits", nargs="+",
+        help="generate only selected splits (default: generate every split)")
+    ap.add_argument(
+        "--workers", type=int, default=max(1, min(8, (os.cpu_count() or 2) - 1)),
+        help="parallel worker processes (use 1 to disable multiprocessing)")
+    ap.add_argument(
+        "--max-map-attempts", type=int, default=100,
+        help="fail instead of rerolling a difficult map forever")
     args = ap.parse_args()
 
-    master = random.Random(args.seed)
-    rows_out: dict[str, list[dict]] = {}
+    if args.workers < 1:
+        ap.error("--workers must be at least 1")
+    if args.starts_per_goal < 1:
+        ap.error("--starts-per-goal must be at least 1")
+    if args.max_map_attempts < 1:
+        ap.error("--max-map-attempts must be at least 1")
 
+    master = random.Random(args.seed)
     S, SS, n = args.size, args.shift_size, args.maps_per_split
     train_lvls = [dict(density=d) for d in (0.10, 0.20, 0.30)]
     plan = [
         # in-distribution: random family, density 10-30%
         ("train", "random", train_lvls, S, n),
+        # Structural training data.  The hardest corridor/passage settings are
+        # deliberately reserved for shift_family below.
+        ("train_structural", "maze",
+         [dict(corridor=c) for c in (2, 3, 4)], S, max(8, n // 2)),
+        ("train_structural", "narrow",
+         [dict(passage=p, clutter=c) for p, c in
+          ((2, .08), (3, .12), (4, .16))], S, max(8, n // 2)),
         ("val",   "random", train_lvls, S, max(8, n // 2)),
+        ("val_structural", "maze",
+         [dict(corridor=c) for c in (2, 3)], S, max(4, n // 4)),
+        ("val_structural", "narrow",
+         [dict(passage=p, clutter=c) for p, c in ((2, .10), (3, .14))],
+         S, max(4, n // 4)),
         ("test",  "random", train_lvls, S, max(8, n // 2)),
         # shift 1: obstacle density
         ("shift_density", "random",
@@ -172,11 +270,13 @@ def main() -> None:
         # shift 2: map size
         ("shift_size", "random",
          [dict(density=d) for d in (0.20, 0.30, 0.40)], SS, max(6, n // 3)),
-        # shift 3: unseen families (TEST ONLY — never used for tuning/calibration)
+        # shift 3: held-out HARD structural parameters.  Maze/narrow families
+        # are seen during structural training, but corridor=1 / passage=1 and
+        # the heavier clutter levels remain test-only.
         ("shift_family", "maze",
-         [dict(corridor=c) for c in (1, 2, 4)], S, max(6, n // 3)),
+         [dict(corridor=1)], S, max(6, n // 3)),
         ("shift_family", "narrow",
-         [dict(passage=p, clutter=c) for p, c in ((1, .10), (2, .15), (3, .20))],
+         [dict(passage=1, clutter=c) for c in (.18, .22, .26)],
          S, max(6, n // 3)),
         # calibration proxy: MILD, disjoint-seed geometry shift used ONLY to
         # calibrate ensemble-variance -> confidence mapping (Section "variance
@@ -190,44 +290,66 @@ def main() -> None:
          S, max(4, n // 5)),
     ]
 
+    tasks_by_split: dict[str, list[dict]] = {}
     map_counter = 0
     for split, family, levels, size, n_maps in plan:
-        made = 0
-        while made < n_maps:
-            lvl = levels[made % len(levels)]
-            seed = master.randrange(2**31)
-            rng = random.Random(seed)
-            grid_rows = make_map(family, lvl, size, size, rng)
-            gm = eng.GridMap.from_ascii(grid_rows)
-            qs = sample_queries(gm, grid_rows, args.queries_per_map,
-                                random.Random(seed + 1))
-            if len(qs) < args.queries_per_map:    # degenerate map -> reroll
-                continue
+        for index in range(n_maps):
             map_id = f"{family}_{split}_{map_counter:04d}"
             map_counter += 1
-            rel = Path("data/synthetic") / family / split / f"{map_id}.map"
-            save_map(ROOT / rel, grid_rows)
-            dens = round(density_of(grid_rows), 4)
-            for (sx, sy), (gx, gy), cstar in qs:
-                rows_out.setdefault(split, []).append(dict(
-                    map_id=map_id, map_path=str(rel),
-                    start_x=sx, start_y=sy, goal_x=gx, goal_y=gy,
-                    family=family, density=dens, width=size, height=size,
-                    split=split, optimal_cost=round(cstar, 6)))
-            made += 1
-        print(f"[{split:13s}] {family:6s}: {n_maps} maps "
-              f"x {args.queries_per_map} queries")
+            tasks_by_split.setdefault(split, []).append({
+                "split": split,
+                "family": family,
+                "level": levels[index % len(levels)],
+                "size": size,
+                "map_id": map_id,
+                "seed": master.randrange(2**31),
+                "queries_per_map": args.queries_per_map,
+                "starts_per_goal": args.starts_per_goal,
+                "max_map_attempts": args.max_map_attempts,
+            })
 
-    inst_dir = ROOT / "data" / "instances"
-    inst_dir.mkdir(parents=True, exist_ok=True)
-    fields = ["map_id", "map_path", "start_x", "start_y", "goal_x", "goal_y",
-              "family", "density", "width", "height", "split", "optimal_cost"]
-    for split, recs in rows_out.items():
-        with open(inst_dir / f"{split}.csv", "w", newline="") as f:
-            w = csv.DictWriter(f, fieldnames=fields)
-            w.writeheader()
-            w.writerows(recs)
-        print(f"wrote {inst_dir / f'{split}.csv'}  ({len(recs)} instances)")
+    if args.splits:
+        known = set(tasks_by_split)
+        unknown = sorted(set(args.splits) - known)
+        if unknown:
+            ap.error(f"unknown splits: {unknown}; choose from {sorted(known)}")
+        selected = set(args.splits)
+        tasks_by_split = {
+            split: tasks for split, tasks in tasks_by_split.items()
+            if split in selected
+        }
+
+    rows_out: dict[str, list[dict]] = {}
+    print(f"workers: {args.workers}")
+    with ProcessPoolExecutor(max_workers=args.workers) as executor:
+        for split, tasks in tasks_by_split.items():
+            records: list[dict] = []
+            family_counts: dict[str, int] = {}
+            futures = [executor.submit(generate_map_task, task) for task in tasks]
+            for completed, future in enumerate(as_completed(futures), start=1):
+                result = future.result()
+                family = result["family"]
+                family_counts[family] = family_counts.get(family, 0) + 1
+                rel = (Path("data/synthetic") / family / split /
+                       f"{result['map_id']}.map")
+                save_map(ROOT / rel, result["rows"])
+                for (sx, sy), (gx, gy), cstar in result["queries"]:
+                    records.append(dict(
+                        map_id=result["map_id"], map_path=str(rel),
+                        start_x=sx, start_y=sy, goal_x=gx, goal_y=gy,
+                        family=family, density=result["density"],
+                        width=result["size"], height=result["size"], split=split,
+                        optimal_cost=round(cstar, 6)))
+                if completed == 1 or completed % 10 == 0 or completed == len(tasks):
+                    print(f"[{split:13s}] {completed:4d}/{len(tasks):4d} maps",
+                          flush=True)
+
+            rows_out[split] = records
+            path = write_instances(split, records)
+            summary = ", ".join(
+                f"{family}={count}" for family, count in sorted(family_counts.items()))
+            print(f"wrote {path} ({len(records)} instances; {summary})",
+                  flush=True)
 
     # sanity: map-level split disjointness (no leakage)
     ids = {s: {r["map_id"] for r in recs} for s, recs in rows_out.items()}
