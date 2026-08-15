@@ -53,14 +53,27 @@ SearchResult cadfs_search(const GridMap& m, const Instance& ins, const Config& c
 
     // Legacy per-node cache: model output and handcrafted risk are static for a node.
     std::unordered_map<int, NodeEval> cache;
+    cache.reserve(static_cast<std::size_t>(std::min(m.size(), 4096)));
     auto eval_node = [&](int n) -> const NodeEval& {
         auto it = cache.find(n);
-        if (it != cache.end()) return it->second;
-        double H_L, var; model.eval(m, n, goal, H_L, var);
+        if (it != cache.end()) {
+            ++res.model_cache_hits;
+            return it->second;
+        }
+        const auto eval_started = std::chrono::steady_clock::now();
+        const GuidanceEvaluation evaluation =
+                model.eval_detailed(m, n, goal);
+        res.model_eval_time_ms +=
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() -
+                    eval_started).count();
+        ++res.model_eval_count;
+        res.model_member_evals += evaluation.member_evaluations;
         NodeEval e;
-        e.H_L = H_L;
-        e.C = cfg.confidence_enabled ? confidence_from_variance(var, tau_c) : 1.0;
-        e.R = risk_combined(m, n, H_L, h(n), cfg,
+        e.H_L = evaluation.priority;
+        e.C = cfg.confidence_enabled
+                ? confidence_from_variance(evaluation.variance, tau_c) : 1.0;
+        e.R = risk_combined(m, n, evaluation.priority, h(n), cfg,
                             /*permute_salt=*/(uint64_t)start * 1315423911u ^ (uint64_t)goal);
         return cache.emplace(n, e).first->second;
     };
@@ -126,10 +139,11 @@ SearchResult cadfs_search(const GridMap& m, const Instance& ins, const Config& c
         const int k = m.neighbors(u, cfg.connectivity, nbr, nc);
         for (int i = 0; i < k; ++i) {
             const int v = nbr[i];
-            if (closed[v]) continue;
             const double t = g[u] + nc[i];
             if (t < g[v]) {
-                if (g[v] < INF) open.erase({fval[v], v});
+                if (g[v] < INF && !closed[v])
+                    open.erase({fval[v], v});
+                closed[v] = 0;
                 g[v] = t; fval[v] = t + h(v); parent[v] = u;
                 open.insert({fval[v], v});
                 ++res.generated;
@@ -145,6 +159,9 @@ SearchResult cadfs_search(const GridMap& m, const Instance& ins, const Config& c
         res.mean_abs_dw = iters > 1 ? sum_dw / (iters - 1) : 0.0;
         res.mean_C = sum_C / iters; res.mean_R = sum_R / iters;
     }
+    const int64_t requests = res.model_eval_count + res.model_cache_hits;
+    res.model_cache_hit_rate = requests > 0
+            ? static_cast<double>(res.model_cache_hits) / requests : 0.0;
     return res;
 }
 
