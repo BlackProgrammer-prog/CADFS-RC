@@ -94,14 +94,20 @@ SearchResult cadfs_next_search(
     };
 
     std::unordered_map<int, NodeEval> cache;
+    cache.reserve(static_cast<std::size_t>(
+            std::min(m.size(), 4096)));
 
     auto evaluate_node = [&](int node) -> const NodeEval& {
         const auto cached = cache.find(node);
-        if (cached != cache.end()) return cached->second;
+        if (cached != cache.end()) {
+            ++result.model_cache_hits;
+            return cached->second;
+        }
 
         const double anchor = h(node);
         const double anchor_normalized = normalized(anchor, map_scale);
         NodeEval evaluation;
+        const auto inference_started = std::chrono::steady_clock::now();
 
         try {
             evaluation.fusion = fusion.evaluate(
@@ -114,6 +120,15 @@ SearchResult cadfs_next_search(
             evaluation.fusion.predictions.push_back(
                     ExpertPrediction{std::string{}, anchor_normalized, 1.0, true});
             evaluation.fusion.normalized_weights.push_back(1.0);
+        }
+        result.model_eval_time_ms +=
+                std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() -
+                        inference_started).count();
+        ++result.model_eval_count;
+        for (const ExpertPrediction& prediction :
+             evaluation.fusion.predictions) {
+            result.model_member_evals += prediction.member_evaluations;
         }
 
         evaluation.fusion.fused_prediction =
@@ -390,6 +405,12 @@ SearchResult cadfs_next_search(
         result.mean_C = sum_confidence / count;
         result.mean_R = sum_risk / count;
     }
+    const int64_t cache_requests =
+            result.model_eval_count + result.model_cache_hits;
+    result.model_cache_hit_rate = cache_requests > 0
+            ? static_cast<double>(result.model_cache_hits) /
+              static_cast<double>(cache_requests)
+            : 0.0;
 
     return result;
 }
