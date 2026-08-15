@@ -1,0 +1,4 @@
+-r requirements-common.txt
+# CUDA 12.8 supports the RTX 3080 Ti (compute capability 8.6).
+--extra-index-url https://download.pytorch.org/whl/cu128
+torch==2.11.0
