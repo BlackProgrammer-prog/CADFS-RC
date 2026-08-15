@@ -1,32 +1,23 @@
-"""Train the deep ensemble (K models) and produce paper-ready figures.
+"""Train and calibrate the CADFS deep ensemble without structural-test leakage.
 
-Auto device: CUDA if available, else Apple MPS, else CPU (see model.pick_device).
-Each ensemble member gets a different seed AND a bootstrap resample of the
-training set (standard deep-ensemble recipe). Early stopping on val loss
-(patience-based) prevents overfitting per member.
+Training domains:
+  train             random grids
+  train_structural  maze/narrow grids with moderate parameters
 
-VARIANCE CALIBRATION (new): raw ensemble variance from bootstrap+seed-only
-diversity underestimates predictive error under geometry shift (maze/narrow
-maps unseen at training) -- members agree with each other while all being
-wrong together. We measure this gap on `val_shift`, a MILD, seed-disjoint
-maze/narrow proxy set that is never used for training weights and is
-DISTINCT from the shift_family TEST set. The resulting scalar
-`variance_calibration` rescales ensemble variance before it is turned into
-confidence C(n) = exp(-variance * calibration / tau_c), by folding the
-calibration factor into an effective temperature tau_c_effective saved to
-results/models/calibration.json. No change to the C++ engine is needed:
-tau_c_effective = tau_c / calibration is passed at run time instead of tau_c.
+Model selection domains:
+  val               random grids
+  val_structural    disjoint moderate maze/narrow grids
 
-Outputs:
-  results/models/member_k.pt            PyTorch checkpoints (best val epoch)
-  results/models/train_log.csv          per-epoch losses
-  results/models/calibration.json       variance_calibration factor + diagnostics
-  results/figures/ml_training_curves.png
-  results/figures/ml_pred_vs_true.png
-  results/figures/ml_uncertainty_shift.png
-  results/figures/ml_calibration.png    <- NEW: error vs raw/calibrated std under shift
-  results/figures/ml_error_vs_std.png
-  results/tables/ml_metrics.csv         MAE/RMSE/mean_std per split
+Calibration domain:
+  val_shift         disjoint mild structural shift
+
+Final report-only domains:
+  test, shift_density, shift_size, shift_family
+
+The network predicts log1p(d*/diag). Search maps this value monotonically to
+1-exp(-prediction), avoiding the old [0,1] target clipping failure on long
+maze detours. Domain-balanced sampling and worst-domain early stopping prevent
+the structural data from silently degrading random-grid accuracy.
 """
 from __future__ import annotations
 
@@ -39,239 +30,491 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import (
+    ConcatDataset,
+    DataLoader,
+    TensorDataset,
+    WeightedRandomSampler,
+)
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "python"))
-from ml.model import CostToGoNet, pick_device  # noqa: E402
+from ml.model import (  # noqa: E402
+    DEFAULT_EXTRA,
+    DEFAULT_HIDDEN,
+    DEFAULT_PATCH,
+    MODEL_SCHEMA_VERSION,
+    TARGET_TRANSFORM,
+    CostToGoNet,
+    decode_target,
+    encode_target,
+    pick_device,
+    target_to_priority,
+)
 
 FIG = ROOT / "results/figures"
 TAB = ROOT / "results/tables"
 MOD = ROOT / "results/models"
-for d in (FIG, TAB, MOD):
-    d.mkdir(parents=True, exist_ok=True)
+for directory in (FIG, TAB, MOD):
+    directory.mkdir(parents=True, exist_ok=True)
 
-# val_shift is the calibration proxy; shift_family/shift_density/shift_size are
-# held out strictly for final reporting and must never influence calibration.
-SPLITS_EVAL = ["test", "shift_density", "shift_size", "shift_family"]
+TRAIN_SPLITS = ("train", "train_structural")
+VAL_SPLITS = ("val", "val_structural")
 CALIB_SPLIT = "val_shift"
+SPLITS_EVAL = ("test", "shift_density", "shift_size", "shift_family")
 
 
-def load_split(split: str):
-    z = np.load(ROOT / "data/labels" / f"{split}.npz")
-    return (torch.from_numpy(z["patch"]), torch.from_numpy(z["extra"]),
-            torch.from_numpy(z["y"]))
+def load_split(split: str) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    path = ROOT / "data/labels" / f"{split}.npz"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"missing {path}; regenerate labels with make_labels.py")
+    with np.load(path) as archive:
+        patch = torch.from_numpy(archive["patch"])
+        extra = torch.from_numpy(archive["extra"])
+        target = torch.from_numpy(archive["y"])
+    if patch.ndim != 4 or patch.shape[-2:] != (DEFAULT_PATCH, DEFAULT_PATCH):
+        raise ValueError(
+            f"{path} uses patch {tuple(patch.shape[-2:])}; expected "
+            f"{DEFAULT_PATCH}x{DEFAULT_PATCH}. Regenerate labels.")
+    if extra.ndim != 2 or extra.shape[1] != DEFAULT_EXTRA:
+        raise ValueError(
+            f"{path} has {extra.shape[1]} extra features; expected {DEFAULT_EXTRA}")
+    if not torch.isfinite(target).all() or torch.any(target < 0):
+        raise ValueError(f"{path} contains invalid cost-to-go targets")
+    return patch, extra, target
 
 
-def train_member(k: int, train, val, device, epochs: int, bs: int, lr: float,
-                 log_rows: list, patience: int = 5) -> CostToGoNet:
-    torch.manual_seed(1000 + k)
-    np.random.seed(1000 + k)
+def validation_loss(net: CostToGoNet, data, device: torch.device,
+                    batch_size: int) -> float:
+    loader = DataLoader(
+        TensorDataset(*data), batch_size=batch_size, shuffle=False,
+        pin_memory=(device.type == "cuda"))
+    loss_sum = 0.0
+    count = 0
+    net.eval()
+    with torch.no_grad():
+        for patch, extra, target in loader:
+            patch = patch.to(device, dtype=torch.float32, non_blocking=True)
+            extra = extra.to(device, non_blocking=True)
+            encoded = encode_target(target.to(device, non_blocking=True))
+            prediction = net(patch, extra)
+            loss_sum += torch.nn.functional.smooth_l1_loss(
+                prediction, encoded, reduction="sum").item()
+            count += len(target)
+    return loss_sum / max(1, count)
 
-    P, X, Y = train
-    idx = torch.from_numpy(np.random.randint(0, len(Y), size=len(Y)))  # bootstrap
-    ds = TensorDataset(P[idx], X[idx], Y[idx])
-    dl = DataLoader(ds, batch_size=bs, shuffle=True,
-                    pin_memory=(device.type == "cuda"))
-    vP, vX, vY = (t.to(device) for t in val)
 
-    net = CostToGoNet().to(device)
-    opt = torch.optim.Adam(net.parameters(), lr=lr)
-    lossf = torch.nn.SmoothL1Loss()
+def balanced_loader(train_domains: dict[str, tuple], member: int,
+                    batch_size: int, structural_weight: float,
+                    device: torch.device) -> DataLoader:
+    datasets = [TensorDataset(*train_domains[name]) for name in TRAIN_SPLITS]
+    random_mass = 1.0
+    structural_mass = structural_weight
+    masses = (random_mass, structural_mass)
+    weights = torch.cat([
+        torch.full((len(dataset),), mass / len(dataset), dtype=torch.double)
+        for dataset, mass in zip(datasets, masses)
+    ])
+    generator = torch.Generator()
+    generator.manual_seed(1000 + member)
+    sampler = WeightedRandomSampler(
+        weights, num_samples=sum(len(dataset) for dataset in datasets),
+        replacement=True, generator=generator)
+    return DataLoader(
+        ConcatDataset(datasets), batch_size=batch_size, sampler=sampler,
+        pin_memory=(device.type == "cuda"),
+        num_workers=0)
 
-    best_val = float("inf")
+
+def train_member(member: int, train_domains: dict, val_domains: dict,
+                 device: torch.device, epochs: int, batch_size: int,
+                 learning_rate: float, log_rows: list[dict], patience: int,
+                 structural_weight: float, hidden: int, amp: bool,
+                 compile_model: bool) -> CostToGoNet:
+    torch.manual_seed(1000 + member)
+    np.random.seed(1000 + member)
+
+    loader = balanced_loader(
+        train_domains, member, batch_size, structural_weight, device)
+    net = CostToGoNet(
+        patch=DEFAULT_PATCH, extra=DEFAULT_EXTRA, hidden=hidden).to(device)
+    forward_net = (
+        torch.compile(net, mode="reduce-overhead")
+        if compile_model else net)
+    optimizer = torch.optim.AdamW(
+        net.parameters(), lr=learning_rate, weight_decay=1e-4)
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, mode="min", factor=0.5, patience=max(2, patience // 3),
+        min_lr=1e-6)
+    scaler = torch.amp.GradScaler(
+        "cuda", enabled=amp and device.type == "cuda")
+    amp_dtype = torch.float16 if device.type == "cuda" else torch.bfloat16
+
+    best_score = float("inf")
     best_state = None
+    best_epoch = 0
     bad_epochs = 0
 
-    for ep in range(epochs):
-        net.train()
-        tot = 0.0
-        for p, x, y in dl:
-            p, x, y = (p.to(device, non_blocking=True), x.to(device, non_blocking=True),
-                      y.to(device, non_blocking=True))
-            opt.zero_grad()
-            loss = lossf(net(p, x), y)
-            loss.backward()
-            opt.step()
-            tot += loss.item() * len(y)
-        train_loss = tot / len(ds)
+    for epoch in range(1, epochs + 1):
+        forward_net.train()
+        loss_sum = 0.0
+        count = 0
+        for patch, extra, target in loader:
+            patch = patch.to(device, dtype=torch.float32, non_blocking=True)
+            extra = extra.to(device, non_blocking=True)
+            encoded = encode_target(target.to(device, non_blocking=True))
+            optimizer.zero_grad(set_to_none=True)
+            with torch.autocast(
+                    device_type=device.type, dtype=amp_dtype,
+                    enabled=amp and device.type in {"cpu", "cuda"}):
+                prediction = forward_net(patch, extra)
+                loss = torch.nn.functional.smooth_l1_loss(
+                    prediction, encoded)
+            scaler.scale(loss).backward()
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(net.parameters(), max_norm=5.0)
+            scaler.step(optimizer)
+            scaler.update()
+            loss_sum += loss.item() * len(target)
+            count += len(target)
 
-        net.eval()
-        with torch.no_grad():
-            vloss = lossf(net(vP, vX), vY).item()
+        train_loss = loss_sum / max(1, count)
+        val_random = validation_loss(
+            forward_net, val_domains["val"], device, batch_size * 2)
+        val_structural = validation_loss(
+            forward_net, val_domains["val_structural"], device, batch_size * 2)
+        # The max term protects the weaker domain.  The small mean term gives a
+        # deterministic tie-break without allowing one domain to be ignored.
+        selection_score = max(val_random, val_structural) + 0.1 * (
+            val_random + val_structural) / 2.0
+        scheduler.step(selection_score)
+        current_lr = optimizer.param_groups[0]["lr"]
+        log_rows.append({
+            "member": member,
+            "epoch": epoch,
+            "train_loss": train_loss,
+            "val_random_loss": val_random,
+            "val_structural_loss": val_structural,
+            "selection_score": selection_score,
+            "learning_rate": current_lr,
+        })
+        print(
+            f"  member {member} epoch {epoch:2d}/{epochs} "
+            f"train {train_loss:.6f} val-random {val_random:.6f} "
+            f"val-struct {val_structural:.6f} score {selection_score:.6f} "
+            f"lr {current_lr:.2e}", flush=True)
 
-        log_rows.append({"member": k, "epoch": ep + 1,
-                         "train_loss": train_loss, "val_loss": vloss})
-        print(f"  member {k} epoch {ep + 1:2d}/{epochs} "
-              f"train {train_loss:.5f} val {vloss:.5f}")
-
-        if vloss < best_val:
-            best_val = vloss
+        if selection_score < best_score - 1e-7:
+            best_score = selection_score
             best_state = copy.deepcopy(net.state_dict())
+            best_epoch = epoch
             bad_epochs = 0
         else:
             bad_epochs += 1
         if bad_epochs >= patience:
-            print(f"  early stopping member {k}: best val={best_val:.5f}")
+            print(
+                f"  early stopping member {member}: epoch={best_epoch} "
+                f"best-score={best_score:.6f}", flush=True)
             break
 
+    if best_state is None:
+        raise RuntimeError(f"member {member} never produced a checkpoint")
     net.load_state_dict(best_state)
-    torch.save(best_state, MOD / f"member_{k}.pt")
+    checkpoint = {
+        "schema_version": MODEL_SCHEMA_VERSION,
+        "target_transform": TARGET_TRANSFORM,
+        "model_config": {
+            "patch": DEFAULT_PATCH,
+            "extra": DEFAULT_EXTRA,
+            "hidden": hidden,
+            "conv_channels": [8, 16],
+        },
+        "member": member,
+        "best_epoch": best_epoch,
+        "best_selection_score": best_score,
+        "state_dict": best_state,
+    }
+    torch.save(checkpoint, MOD / f"member_{member}.pt")
     return net
 
 
 @torch.no_grad()
-def ensemble_predict(nets, P, X, device, bs=4096):
-    preds = []
+def ensemble_outputs(nets: list[CostToGoNet], data, device: torch.device,
+                     batch_size: int = 2048) -> dict[str, np.ndarray]:
+    patch, extra, target = data
+    member_outputs = []
     for net in nets:
         net.eval()
-        outs = []
-        for i in range(0, len(P), bs):
-            outs.append(net(P[i:i + bs].to(device), X[i:i + bs].to(device)).cpu())
-        preds.append(torch.cat(outs))
-    stack = torch.stack(preds)  # (K, N)
-    return stack.mean(0).numpy(), stack.var(0, unbiased=False).numpy()
+        outputs = []
+        for start in range(0, len(patch), batch_size):
+            outputs.append(net(
+                patch[start:start + batch_size].to(
+                    device, dtype=torch.float32),
+                extra[start:start + batch_size].to(device)).cpu())
+        member_outputs.append(torch.cat(outputs))
+
+    encoded = torch.stack(member_outputs)
+    decoded = decode_target(encoded)
+    priority = target_to_priority(encoded)
+    target_priority = target / (1.0 + target)
+    return {
+        "target": target.numpy(),
+        "target_priority": target_priority.numpy(),
+        "prediction": decoded.mean(0).numpy(),
+        "prediction_priority": priority.mean(0).numpy(),
+        "priority_variance": priority.var(0, unbiased=False).numpy(),
+    }
 
 
-def compute_calibration(nets, device) -> dict:
-    """Variance-calibration factor from the val_shift proxy (never test data).
+def compute_calibration(nets: list[CostToGoNet], device: torch.device) -> dict:
+    outputs = ensemble_outputs(nets, load_split(CALIB_SPLIT), device)
+    residual = outputs["prediction_priority"] - outputs["target_priority"]
+    mse = float(np.mean(residual ** 2))
+    squared_error = residual ** 2
+    member_variance = outputs["priority_variance"].astype(np.float64)
+    # Non-negative least squares for E[error^2 | v] ~= scale*v + floor.
+    # The floor captures shared ensemble bias; scale-only calibration otherwise
+    # explodes when all members make the same OOD error.
+    design = np.column_stack([member_variance, np.ones_like(member_variance)])
+    unconstrained = np.linalg.lstsq(
+        design, squared_error.astype(np.float64), rcond=None)[0]
+    candidates: list[tuple[float, float]] = []
+    if unconstrained[0] >= 0.0 and unconstrained[1] >= 0.0:
+        candidates.append((float(unconstrained[0]), float(unconstrained[1])))
+    candidates.append((0.0, float(np.mean(squared_error))))
+    denominator = float(np.dot(member_variance, member_variance))
+    scale_at_zero_floor = (
+        max(0.0, float(np.dot(member_variance, squared_error)) / denominator)
+        if denominator > 0.0 else 0.0)
+    candidates.append((scale_at_zero_floor, 0.0))
+    raw_scale, raw_floor = min(
+        candidates,
+        key=lambda pair: float(np.mean(
+            (pair[0] * member_variance + pair[1] - squared_error) ** 2)))
+    # Priority is bounded, hence both the variance and squared error are <= 1.
+    variance_scale = float(np.clip(raw_scale, 0.0, 1e6))
+    variance_floor = float(np.clip(raw_floor, 0.0, 1.0))
+    calibrated_variance = variance_scale * member_variance + variance_floor
+    return {
+        "schema_version": 2,
+        "split": CALIB_SPLIT,
+        "n": len(residual),
+        "priority_mse": mse,
+        "mean_priority_variance": float(np.mean(member_variance)),
+        "raw_variance_scale": raw_scale,
+        "raw_variance_floor": raw_floor,
+        "variance_scale": variance_scale,
+        "variance_floor": variance_floor,
+        "calibration_mse": float(np.mean(
+            (calibrated_variance - squared_error) ** 2)),
+        "decoded_mae": float(np.mean(np.abs(
+            outputs["prediction"] - outputs["target"]))),
+        "priority_mae": float(np.mean(np.abs(residual))),
+    }
 
-    We fit a single positive scalar `calibration` such that
-        E[(mu - y)^2]  ~=  calibration * E[variance]
-    i.e. calibration = mean squared error / mean predicted variance on the
-    calibration proxy split. calibration > 1 means the raw ensemble is
-    overconfident (variance underestimates error) under geometry shift.
-    """
-    P, X, Y = load_split(CALIB_SPLIT)
-    mu, var = ensemble_predict(nets, P, X, device)
-    y = Y.numpy()
-    mse = float(np.mean((mu - y) ** 2))
-    mean_var = float(np.mean(var)) + 1e-12
-    calibration = mse / mean_var
-    return dict(split=CALIB_SPLIT, n=len(y), mse=mse, mean_variance=mean_var,
-               variance_calibration=calibration,
-               mae=float(np.mean(np.abs(mu - y))),
-               mean_std=float(np.sqrt(var).mean()))
 
-
-def make_figures(nets, device, calib: dict):
+def make_figures(nets: list[CostToGoNet], device: torch.device,
+                 calibration: dict) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
     import pandas as pd
     import seaborn as sns
-    sns.set_theme(style="whitegrid", context="paper", font_scale=1.2)
 
-    # --- training curves ---
+    sns.set_theme(style="whitegrid", context="paper", font_scale=1.15)
     log = pd.read_csv(MOD / "train_log.csv")
-    fig, ax = plt.subplots(1, 2, figsize=(9, 3.4), sharey=True)
-    for i, col in enumerate(["train_loss", "val_loss"]):
-        sns.lineplot(log, x="epoch", y=col, hue="member",
-                     palette="viridis", ax=ax[i], legend=(i == 1))
-        ax[i].set_title(col.replace("_", " "))
-        ax[i].set_ylabel("Smooth L1 loss" if i == 0 else "")
+
+    fig, axes = plt.subplots(1, 3, figsize=(12.0, 3.5), sharey=True)
+    for axis, column, title in zip(
+            axes,
+            ("train_loss", "val_random_loss", "val_structural_loss"),
+            ("balanced training", "random validation", "structural validation")):
+        sns.lineplot(log, x="epoch", y=column, hue="member", ax=axis,
+                     legend=(axis is axes[-1]), palette="viridis")
+        axis.set(title=title, ylabel="Smooth L1 on log1p target")
     fig.tight_layout()
     fig.savefig(FIG / "ml_training_curves.png", dpi=200)
+    plt.close(fig)
 
-    # --- evaluate all report splits (test + 3 held-out shift TEST sets) ---
-    rows, frames = [], []
+    rows = []
+    frames = []
+    scale = calibration["variance_scale"]
+    floor = calibration["variance_floor"]
     for split in SPLITS_EVAL:
-        P, X, Y = load_split(split)
-        mu, var = ensemble_predict(nets, P, X, device)
-        err = np.abs(mu - Y.numpy())
-        std = np.sqrt(var)
-        std_cal = np.sqrt(var * calib["variance_calibration"])
-        rows.append(dict(split=split, n=len(Y),
-                         mae=float(err.mean()),
-                         rmse=float(np.sqrt(((mu - Y.numpy()) ** 2).mean())),
-                         mean_std=float(std.mean()),
-                         mean_std_calibrated=float(std_cal.mean())))
-        frames.append(pd.DataFrame(dict(split=split, std=std, std_cal=std_cal,
-                                        abs_err=err, y=Y.numpy(), pred=mu)))
-    df = pd.concat(frames, ignore_index=True)
-    pd.DataFrame(rows).to_csv(TAB / "ml_metrics.csv", index=False)
-    print(pd.DataFrame(rows).to_string(index=False))
-    print(f"\nvariance_calibration (fit on {CALIB_SPLIT}) = "
-          f"{calib['variance_calibration']:.2f}x")
+        outputs = ensemble_outputs(nets, load_split(split), device)
+        raw_error = np.abs(outputs["prediction"] - outputs["target"])
+        priority_error = np.abs(
+            outputs["prediction_priority"] - outputs["target_priority"])
+        std = np.sqrt(outputs["priority_variance"])
+        calibrated_std = np.sqrt(
+            outputs["priority_variance"] * scale + floor)
+        rows.append({
+            "split": split,
+            "n": len(raw_error),
+            "mae": float(raw_error.mean()),
+            "rmse": float(np.sqrt(np.mean(
+                (outputs["prediction"] - outputs["target"]) ** 2))),
+            "priority_mae": float(priority_error.mean()),
+            "mean_priority_std": float(std.mean()),
+            "mean_calibrated_priority_std": float(calibrated_std.mean()),
+        })
+        frames.append(pd.DataFrame({
+            "split": split,
+            "target": outputs["target"],
+            "prediction": outputs["prediction"],
+            "priority_error": priority_error,
+            "priority_std": std,
+            "calibrated_priority_std": calibrated_std,
+        }))
+    metrics = pd.DataFrame(rows)
+    metrics.to_csv(TAB / "ml_metrics.csv", index=False)
+    print(metrics.to_string(index=False))
+    data = pd.concat(frames, ignore_index=True)
 
-    # --- pred vs true (in-distribution test) ---
-    d = df[df.split == "test"].sample(min(4000, (df.split == "test").sum()),
-                                      random_state=0)
-    fig, ax = plt.subplots(figsize=(4.2, 4))
-    ax.scatter(d.y, d.pred, s=4, alpha=0.25, edgecolors="none")
-    lim = [0, max(d.y.max(), d.pred.max()) * 1.05]
-    ax.plot(lim, lim, "k--", lw=1)
-    ax.set(xlabel="true normalized cost-to-go", ylabel="ensemble prediction",
-           title="In-distribution test")
+    sample = data[data.split == "test"].sample(
+        min(4000, int((data.split == "test").sum())), random_state=0)
+    fig, axis = plt.subplots(figsize=(4.3, 4.0))
+    axis.scatter(sample.target, sample.prediction, s=4, alpha=0.25,
+                 edgecolors="none")
+    limit = max(sample.target.max(), sample.prediction.max()) * 1.05
+    axis.plot([0, limit], [0, limit], "k--", linewidth=1)
+    axis.set(xlabel="true d*/diagonal", ylabel="ensemble prediction",
+             title="In-distribution prediction")
     fig.tight_layout()
     fig.savefig(FIG / "ml_pred_vs_true.png", dpi=200)
+    plt.close(fig)
 
-    # --- ensemble std under distribution shift (raw) ---
-    fig, ax = plt.subplots(figsize=(6.4, 3.6))
-    sns.violinplot(df, x="split", y="std", order=SPLITS_EVAL, cut=0,
-                   inner="quartile", ax=ax, density_norm="width")
-    ax.set(xlabel="", ylabel="raw ensemble std  $\\sigma_L(n)$",
-           title="Predictive uncertainty (raw, uncalibrated)")
+    fig, axis = plt.subplots(figsize=(7.0, 3.7))
+    sns.violinplot(data, x="split", y="calibrated_priority_std", cut=0,
+                   inner="quartile", density_norm="width", ax=axis)
+    axis.set(xlabel="", ylabel="calibrated priority std",
+             title="Predictive uncertainty under distribution shift")
     fig.tight_layout()
     fig.savefig(FIG / "ml_uncertainty_shift.png", dpi=200)
+    plt.close(fig)
 
-    # --- NEW: calibration diagnostic -- MAE vs raw std and vs calibrated std ---
-    fig, ax = plt.subplots(1, 2, figsize=(9, 3.6), sharey=True)
-    g = df.groupby("split", observed=True).agg(
-        mae=("abs_err", "mean"), std=("std", "mean"), std_cal=("std_cal", "mean")
-    ).reindex(SPLITS_EVAL).reset_index()
-    for a, col, title in ((ax[0], "std", "raw std vs MAE"),
-                          (ax[1], "std_cal", "calibrated std vs MAE")):
-        sns.scatterplot(g, x=col, y="mae", hue="split", s=90, ax=a, legend=(a is ax[1]))
-        a.set(xlabel=col, ylabel="MAE" if a is ax[0] else "", title=title)
-    fig.suptitle(f"Variance calibration factor = {calib['variance_calibration']:.2f}x "
-                 f"(fit on {CALIB_SPLIT})", fontsize=10)
+    grouped = data.groupby("split", observed=True).agg(
+        priority_mae=("priority_error", "mean"),
+        raw_std=("priority_std", "mean"),
+        calibrated_std=("calibrated_priority_std", "mean")).reset_index()
+    fig, axes = plt.subplots(1, 2, figsize=(9.0, 3.6), sharey=True)
+    for axis, column, title in (
+            (axes[0], "raw_std", "raw uncertainty"),
+            (axes[1], "calibrated_std", "calibrated uncertainty")):
+        sns.scatterplot(grouped, x=column, y="priority_mae", hue="split",
+                        s=90, ax=axis, legend=(axis is axes[1]))
+        axis.set(title=title, ylabel="priority MAE")
+    fig.suptitle(
+        f"Variance={calibration['variance_scale']:.3g}v+"
+        f"{calibration['variance_floor']:.3g} "
+        f"fit on {CALIB_SPLIT}", fontsize=10)
     fig.tight_layout()
     fig.savefig(FIG / "ml_calibration.png", dpi=200)
+    plt.close(fig)
 
-    # --- error vs uncertainty deciles (calibrated std) ---
-    fig, ax = plt.subplots(figsize=(5.2, 3.6))
-    df["std_bin"] = pd.qcut(df["std_cal"], 10, duplicates="drop")
-    gg = df.groupby("std_bin", observed=True)["abs_err"].mean().reset_index()
-    gg["bin_center"] = [iv.mid for iv in gg.std_bin]
-    sns.lineplot(gg, x="bin_center", y="abs_err", marker="o", ax=ax)
-    ax.set(xlabel="calibrated ensemble std (decile bins)", ylabel="mean |error|",
-           title="Calibrated uncertainty predicts error")
+    ordered = data.sort_values("calibrated_priority_std").copy()
+    ordered["uncertainty_decile"] = pd.qcut(
+        ordered["calibrated_priority_std"], 10, duplicates="drop")
+    curve = ordered.groupby("uncertainty_decile", observed=True).agg(
+        uncertainty=("calibrated_priority_std", "mean"),
+        error=("priority_error", "mean")).reset_index()
+    fig, axis = plt.subplots(figsize=(5.3, 3.7))
+    sns.lineplot(curve, x="uncertainty", y="error", marker="o", ax=axis)
+    axis.set(xlabel="calibrated uncertainty decile mean",
+             ylabel="mean priority error",
+             title="Uncertainty-error relationship")
     fig.tight_layout()
     fig.savefig(FIG / "ml_error_vs_std.png", dpi=200)
+    plt.close(fig)
     print(f"figures -> {FIG}")
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--K", type=int, default=5)
-    ap.add_argument("--epochs", type=int, default=12)
-    ap.add_argument("--batch-size", type=int, default=256)
-    ap.add_argument("--lr", type=float, default=1e-3)
-    ap.add_argument("--patience", type=int, default=5)
-    args = ap.parse_args()
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--K", type=int, default=7)
+    parser.add_argument("--epochs", type=int, default=80)
+    parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--lr", type=float, default=3e-4)
+    parser.add_argument("--patience", type=int, default=10)
+    parser.add_argument("--structural-weight", type=float, default=1.0)
+    parser.add_argument("--hidden", type=int, default=DEFAULT_HIDDEN)
+    parser.add_argument(
+        "--device", choices=["auto", "cpu", "cuda", "mps"],
+        default="auto")
+    parser.add_argument("--amp", action=argparse.BooleanOptionalAction,
+                        default=False)
+    parser.add_argument("--compile", action=argparse.BooleanOptionalAction,
+                        default=False)
+    args = parser.parse_args()
+    if args.K < 2:
+        parser.error("--K must be at least 2 for uncertainty estimation")
+    if args.structural_weight <= 0:
+        parser.error("--structural-weight must be positive")
 
-    device = pick_device()
-    train = load_split("train")
-    val = load_split("val")
-    print(f"train samples: {len(train[2])}, val: {len(val[2])}")
+    device = pick_device(args.device)
+    if args.amp and device.type not in {"cpu", "cuda"}:
+        parser.error("--amp is supported only for CPU/CUDA")
+    train_domains = {split: load_split(split) for split in TRAIN_SPLITS}
+    val_domains = {split: load_split(split) for split in VAL_SPLITS}
+    print(
+        "training samples: " + ", ".join(
+            f"{name}={len(data[2]):,}" for name, data in train_domains.items()))
+    print(
+        "validation samples: " + ", ".join(
+            f"{name}={len(data[2]):,}" for name, data in val_domains.items()))
 
-    log_rows: list = []
-    nets = [train_member(k, train, val, device, args.epochs, args.batch_size,
-                         args.lr, log_rows, args.patience)
-            for k in range(args.K)]
-    with open(MOD / "train_log.csv", "w", newline="") as f:
-        w = csv.DictWriter(f, fieldnames=["member", "epoch", "train_loss", "val_loss"])
-        w.writeheader()
-        w.writerows(log_rows)
+    log_rows: list[dict] = []
+    nets = [
+        train_member(
+            member, train_domains, val_domains, device, args.epochs,
+            args.batch_size, args.lr, log_rows, args.patience,
+            args.structural_weight, args.hidden, args.amp, args.compile)
+        for member in range(args.K)
+    ]
+    fields = [
+        "member", "epoch", "train_loss", "val_random_loss",
+        "val_structural_loss", "selection_score", "learning_rate",
+    ]
+    with (MOD / "train_log.csv").open("w", newline="") as stream:
+        writer = csv.DictWriter(stream, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(log_rows)
 
-    calib = compute_calibration(nets, device)
-    json.dump(calib, open(MOD / "calibration.json", "w"), indent=2)
-    print(f"calibration -> {MOD / 'calibration.json'}  "
-          f"(variance_calibration = {calib['variance_calibration']:.2f}x, "
-          f"fit on {calib['n']} instances of {CALIB_SPLIT})")
-
-    make_figures(nets, device, calib)
+    calibration = compute_calibration(nets, device)
+    with (MOD / "calibration.json").open("w", encoding="utf-8") as stream:
+        json.dump(calibration, stream, indent=2)
+    manifest = {
+        "schema_version": MODEL_SCHEMA_VERSION,
+        "target_transform": TARGET_TRANSFORM,
+        "model": {
+            "patch": DEFAULT_PATCH,
+            "extra": DEFAULT_EXTRA,
+            "hidden": args.hidden,
+            "members": args.K,
+        },
+        "training": {
+            "splits": list(TRAIN_SPLITS),
+            "validation_splits": list(VAL_SPLITS),
+            "calibration_split": CALIB_SPLIT,
+            "structural_weight": args.structural_weight,
+            "epochs": args.epochs,
+            "batch_size": args.batch_size,
+            "learning_rate": args.lr,
+            "patience": args.patience,
+            "device_requested": args.device,
+            "device_resolved": device.type,
+            "amp": args.amp,
+            "compile": args.compile,
+        },
+    }
+    with (MOD / "training_manifest.json").open("w", encoding="utf-8") as stream:
+        json.dump(manifest, stream, indent=2)
+    print(
+        f"calibration -> {MOD / 'calibration.json'} "
+        f"(variance={calibration['variance_scale']:.3g}v+"
+        f"{calibration['variance_floor']:.3g})")
+    make_figures(nets, device, calibration)
 
 
 if __name__ == "__main__":
