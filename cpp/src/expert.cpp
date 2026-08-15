@@ -21,21 +21,15 @@ namespace cadfs {
     ExpertPrediction GeometricExpert::predict(
             const ExpertContext& context) const {
 
-        double mean = 0.0;
-        double variance = 0.0;
-
-        guidance_.eval(
-                context.map,
-                context.node,
-                context.goal,
-                mean,
-                variance);
+        const GuidanceEvaluation evaluation = guidance_.eval_detailed(
+                context.map, context.node, context.goal);
 
         return {
                 name(),
-                unit_clip(mean),
-                std::max(0.0, variance),
-                true
+                unit_clip(evaluation.priority),
+                std::max(0.0, evaluation.variance),
+                true,
+                std::max(0, evaluation.member_evaluations)
         };
     }
 
