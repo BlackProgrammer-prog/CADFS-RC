@@ -152,37 +152,130 @@ python python/analysis/systems_table.py --input results/logs/metric_validation_c
 
 Runner فایل موجود را بدون `--overwrite` بازنویسی نمی‌کند.
 
-## 8. benchmark نهایی مقاله
+## 8. benchmark نهایی قفل‌شده مقاله
 
-این مرحله فقط پس از freeze و روی splitهای final دست‌نخورده اجرا شود:
+### 8.1 تعریف دقیق ادعا
+
+هر دو روش Weighted A* و CADFS دارای کران نظری `W=2` هستند. بنابراین ادعای
+مجاز «بهتر بودن maximum مشاهده‌شده و tail تجربی» است، نه کران worst-case
+نظری کوچک‌تر. ادعای اصلی از قبل چنین ثبت می‌شود: روی تک‌تک splitهای نهایی،
+success برابر یک، نقض کران صفر، و `max_ratio(CADFS-metric) < max_ratio(WA*)`.
+صدک‌های 95 و 99 و `CVaR95` معیارهای ثانویه‌اند.
+
+نتیجه validation قبلی فقط در aggregate بهتر بود. بررسی split-by-split نشان
+داد gate سخت maximum روی `val_shift` و `val_structural` برقرار نیست؛ بنابراین
+آزمون final واقعاً امکان ردکردن فرضیه را دارد و نباید نتیجه آن تضمین‌شده فرض
+شود.
+
+### 8.2 انتخاب tail-robust فقط روی validation
+
+پروفایل conservative فعلی در maximum تجمیعی از WA* بهتر است، اما gate
+split-by-split را روی `val_shift` و `val_structural` پاس نمی‌کند. قبل از
+بازکردن final، انتخاب‌کننده tail را در یک مسیر تازه اجرا کنید؛ artifactهای
+فعلی overwrite نمی‌شوند:
 
 ```bash
-taskset -c 2 python python/scripts/run_experiments.py --splits final_test final_shift_density final_shift_size final_shift_family --per-split 200 --methods dijkstra astar wastar focal_plain learn_focal_wstar cadfs cadfs_next cadfs_next_metric_tuned --guidance fast --guidance-model results/models/cpu_v1/fast_ensemble.txt --tuned-next results/models/cpu_v1/tuned_next.json --tuned-next-metric results/models/cpu_v1/tuned_next_metric_r1.json --warmup-runs 2 --repetitions 5 --method-order rotate --out results/logs/final_cpu_v1.csv
-python python/analysis/tables.py --input results/logs/final_cpu_v1.csv --tag final_cpu_v1
-python python/analysis/systems_table.py --input results/logs/final_cpu_v1.csv --tag final_cpu_v1 --baseline astar
-python python/analysis/figures_next.py --input results/logs/final_cpu_v1.csv --tag final_cpu_v1 --bound 2.0
+mkdir -p results/models/tail_r1
+python python/scripts/tune_next_validation.py --splits val val_structural val_shift --per-split 100 --workers 1 --seed 17 --guidance fast --guidance-model results/models/fast_ensemble.txt --guidance-region-radius 1 --out results/models/tail_r1/tuned_next_balanced.json --out-conservative results/models/tail_r1/tuned_next_conservative.json --out-tail results/models/tail_r1/tuned_next_tail.json
+python python/scripts/run_experiments.py --splits val val_structural val_shift --per-split 100 --methods wastar cadfs_next_metric_tuned --guidance fast --guidance-model results/models/fast_ensemble.txt --tuned-next results/models/tuned_next.json --tuned-next-metric results/models/tail_r1/tuned_next_tail.json --warmup-runs 1 --repetitions 5 --method-order rotate --out results/logs/tail_validation_v1.csv
+python python/analysis/tail_quality.py --input results/logs/tail_validation_v1.csv --tag tail_validation_v1 --candidate cadfs_next_metric_tuned --baseline wastar --bound 2.0
+```
+
+در فایل `results/tables/tail_validation_v1_claim_gate.json` باید مقدار
+`primary_claim_pass_all_splits` برابر `true` باشد. اگر false است، final را
+تولید نکنید؛ فرضیه با فضای candidate فعلی پشتیبانی نشده است.
+
+### 8.3 freeze قبل از ساخت داده
+
+ابتدا همه تغییرات مرتبط با benchmark را review و در یک commit قابل‌بازیابی
+ثبت کنید؛ مسیرهای `cpp`، `python` و `configs` باید clean باشند. تغییرات
+نامرتبطی مثل متن `SECURITY.md` مانع freeze نیستند. سپس مدل، tuning و تمام
+سورس‌های مؤثر قفل می‌شوند:
+
+```bash
+python python/scripts/freeze_final_protocol.py create --lock results/final_v1/FROZEN_PROTOCOL.json --artifacts results/models/fast_ensemble.txt results/models/tuned.json results/models/tuned_next.json results/models/tail_r1/tuned_next_tail.json
+python python/scripts/freeze_final_protocol.py verify --lock results/final_v1/FROZEN_PROTOCOL.json
+```
+
+فرمان create عمداً روی سورس یا artifact مرتبطِ کثیف متوقف می‌شود. از
+`--allow-dirty` فقط برای rehearsal استفاده کنید؛ خروجی آن paper-final نیست.
+
+### 8.4 ساخت داده‌های تازه و غیرقابل overwrite
+
+ابتدا plan را بدون نوشتن فایل ببینید، سپس core و scaling را بسازید:
+
+```bash
+python python/scripts/gen_final_benchmark.py --groups core scaling --workers 8 --dry-run
+python python/scripts/gen_final_benchmark.py --groups core scaling --workers 8
+```
+
+این plan شامل 1100 مسئله core است: 300 ID، تعداد 300 density-OOD، تعداد 300
+structural-OOD و تعداد 200 size-OOD در اندازه 128. بخش scaling نیز در هر یک
+از اندازه‌های 256، 512 و 1024 تعداد 96 مسئله paired دارد. seed، CSV و hash
+تمام mapها در manifest ثبت می‌شوند. مولد هیچ فایل موجودی را overwrite
+نمی‌کند.
+
+### 8.5 اجرای core final
+
+```bash
+python python/scripts/freeze_final_protocol.py verify --lock results/final_v1/FROZEN_PROTOCOL.json
+taskset -c 2 python python/scripts/run_experiments.py --splits final_test_v1 final_ood_density_v1 final_ood_structure_v1 final_ood_size_v1 --per-split 300 --methods dijkstra astar wastar focal_plain learn_focal_wstar cadfs cadfs_next cadfs_next_metric_tuned --guidance fast --guidance-model results/models/fast_ensemble.txt --tuned-next results/models/tuned_next.json --tuned-next-metric results/models/tail_r1/tuned_next_tail.json --protocol-lock results/final_v1/FROZEN_PROTOCOL.json --warmup-runs 2 --repetitions 5 --method-order rotate --out results/logs/final_core_v1.csv
+python python/analysis/tables.py --input results/logs/final_core_v1.csv --tag final_core_v1
+python python/analysis/systems_table.py --input results/logs/final_core_v1.csv --tag final_core_v1 --baseline astar
+python python/analysis/tail_quality.py --input results/logs/final_core_v1.csv --tag final_core_v1 --candidate cadfs_next_metric_tuned --baseline wastar --bound 2.0
+python python/analysis/figures_next.py --input results/logs/final_core_v1.csv --tag final_core_v1 --bound 2.0
+```
+
+### 8.6 اجرای scaling
+
+برای جلوگیری از گم‌شدن یک اجرای طولانی، هر سه اندازه در یک CSV جدا از core
+قرار می‌گیرند:
+
+```bash
+python python/scripts/freeze_final_protocol.py verify --lock results/final_v1/FROZEN_PROTOCOL.json
+taskset -c 2 python python/scripts/run_experiments.py --splits final_scale_256_v1 final_scale_512_v1 final_scale_1024_v1 --per-split 96 --methods dijkstra astar wastar cadfs_next cadfs_next_metric_tuned --guidance fast --guidance-model results/models/fast_ensemble.txt --tuned-next results/models/tuned_next.json --tuned-next-metric results/models/tail_r1/tuned_next_tail.json --protocol-lock results/final_v1/FROZEN_PROTOCOL.json --warmup-runs 2 --repetitions 5 --method-order rotate --out results/logs/final_scaling_v1.csv
+python python/analysis/tables.py --input results/logs/final_scaling_v1.csv --tag final_scaling_v1
+python python/analysis/systems_table.py --input results/logs/final_scaling_v1.csv --tag final_scaling_v1 --baseline astar
+python python/analysis/tail_quality.py --input results/logs/final_scaling_v1.csv --tag final_scaling_v1 --candidate cadfs_next_metric_tuned --baseline wastar --bound 2.0
+```
+
+### 8.7 stress اختیاری 2048
+
+این tier فقط 16 مسئله دارد و برای stress/memory است؛ آن را به‌عنوان آزمون
+آماری هم‌قدرت با core معرفی نکنید:
+
+```bash
+python python/scripts/gen_final_benchmark.py --groups stress --workers 4
+taskset -c 2 python python/scripts/run_experiments.py --splits final_scale_2048_v1 --per-split 16 --methods astar wastar cadfs_next cadfs_next_metric_tuned --guidance fast --guidance-model results/models/fast_ensemble.txt --tuned-next results/models/tuned_next.json --tuned-next-metric results/models/tail_r1/tuned_next_tail.json --protocol-lock results/final_v1/FROZEN_PROTOCOL.json --warmup-runs 1 --repetitions 3 --method-order rotate --out results/logs/final_stress_2048_v1.csv
+python python/analysis/tail_quality.py --input results/logs/final_stress_2048_v1.csv --tag final_stress_2048_v1 --candidate cadfs_next_metric_tuned --baseline wastar --bound 2.0 --bootstrap 5000
 ```
 
 برای timing، performance governor را در صورت دسترسی روی `performance` قرار
-دهید و workload دیگری روی دستگاه اجرا نکنید.
+دهید و workload دیگری روی دستگاه اجرا نکنید. بعد از مشاهده هر final result،
+تغییر مدل یا tuning ممنوع است؛ تغییر، نیازمند نسخه و benchmark تازه است.
 
 ## 9. قفل artifacts
 
 ```bash
-sha256sum results/models/cpu_v1/fast_student.pt results/models/cpu_v1/fast_ensemble.txt results/models/cpu_v1/tuned_next_metric_r1.json results/logs/final_cpu_v1.csv results/logs/final_cpu_v1.manifest.json
+python python/scripts/freeze_final_protocol.py verify --lock results/final_v1/FROZEN_PROTOCOL.json
+sha256sum data/instances/final_core_v1.manifest.json data/instances/final_scaling_v1.manifest.json results/logs/final_core_v1.csv results/logs/final_core_v1.manifest.json results/logs/final_scaling_v1.csv results/logs/final_scaling_v1.manifest.json
 git rev-parse HEAD
 git status --short
 ```
 
-Runner hash مدل، tuning JSON، CSV splitها، commit، وضعیت dirty، packageها،
-CPU، warm-up، repetitions و ترتیب روش‌ها را در manifest ثبت می‌کند.
+فایل freeze هش تک‌تک sourceها، مدل و tuning را نگه می‌دارد. manifest داده
+هش CSV و تک‌تک mapها را ثبت می‌کند. Runner نیز hash مدل، tuning JSON، CSV
+splitها، commit، وضعیت dirty، packageها، CPU، warm-up، repetitions و ترتیب
+روش‌ها را در manifest نتیجه ثبت می‌کند.
 
 ## 10. gate پذیرش روش metric
 
 روش metric فقط وقتی جایگزین baseline شود که روی final test:
 
 - success و bound حفظ شوند؛
-- quality gate از پیش تعیین‌شده، مثلاً `max ratio <= 1.30`، رعایت شود؛
+- gate اصلی ازپیش‌ثبت‌شده، یعنی max مشاهده‌شده کمتر از WA* روی تک‌تک
+  splitها، رعایت شود؛
+- `p95`، `p99` و `CVaR95` کامل گزارش شوند، حتی اگر نامطلوب باشند؛
 - کاهش runtime پس از Holm correction معنی‌دار باشد؛
 - trade-off expansion از قبل تعریف و کامل گزارش شود؛
 - هیچ split شکست پنهان‌شده‌ای نداشته باشد.

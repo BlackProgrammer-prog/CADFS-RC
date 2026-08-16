@@ -120,6 +120,28 @@ engine cannot support road-routing superiority claims.
 - Archive the CSV, manifest, model hashes, commit hash, environment, and exact
   command together.
 
+### Frozen final/OOD/scaling protocol
+
+The previously inspected `test` and `shift_*` splits are diagnostic only after
+algorithm development.  Paper-final evidence uses the separately generated
+`final_*_v1` splits.  `freeze_final_protocol.py` records the recoverable Git
+snapshot and hashes every source/model/tuning input before those data are
+created.  `gen_final_benchmark.py` refuses overwrites and records hashes for
+every CSV and map.
+
+The predeclared core set contains 300 ID, 300 density-OOD, 300 structural-OOD,
+and 200 size-OOD queries.  Scaling contains 96 paired random-map queries at
+each of 256, 512, and 1024.  The 16-query 2048 tier is explicitly a stress
+tier, not an equally powered statistical sample.
+
+Both Weighted A* and CADFS retain the declared theoretical bound `W=2`.
+Consequently, a lower sample maximum is called an **empirical observed-maximum
+advantage**, never a tighter theoretical worst-case guarantee.  The primary
+tail gate requires success on every query, zero bound violations, and a
+strictly lower observed maximum than Weighted A* on every predeclared split.
+P95, P99, CVaR95, paired bootstrap intervals, the worst problem identifiers,
+and all failed gates must also be reported.
+
 ## Claim gates
 
 The following claims are forbidden until their gate is satisfied:
