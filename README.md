@@ -264,6 +264,10 @@ Python dependencies are split by hardware:
 - requirements-gpu.txt: CUDA 12.8 PyTorch wheels (suitable for an RTX 3080 Ti) and all common dependencies;
 - requirements.txt: aliases the CPU profile, because CPU is the safe default.
 
+For a non-destructive, versioned, step-by-step CPU/GPU workflow, including
+regional-guidance validation and publication timing, see
+[docs/CPU_GPU_RUNBOOK_FA.md](docs/CPU_GPU_RUNBOOK_FA.md).
+
 CUDA is used for teacher/student training. Search-time inference uses the
 distilled C++ student in both profiles: launching one small CUDA kernel per
 node is slower than CPU inference. A future native CUDA search backend must
