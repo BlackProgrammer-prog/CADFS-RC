@@ -45,11 +45,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--guidance", choices=["auto", "fast", "cnn", "cnn-adaptive"],
         default="auto")
+    parser.add_argument(
+        "--guidance-model",
+        help="versioned guidance export; defaults to the standard model path")
+    parser.add_argument(
+        "--guidance-region-radius", type=int, default=0,
+        help="0 keeps exact per-node inference; r>0 enables regional residual reuse")
     parser.add_argument("--early-exit-members", type=int, default=2)
     parser.add_argument("--early-exit-variance", type=float, default=0.01)
     parser.add_argument(
         "--max-candidates", type=int, default=0,
         help="deterministic development cap; 0 evaluates the full joint grid")
+    parser.add_argument(
+        "--conservative-max-ratio", type=float, default=1.30,
+        help="validation worst-case quality gate for the conservative profile")
     return parser.parse_args()
 
 
@@ -251,30 +260,44 @@ def main() -> None:
         raise ValueError("--per-split must be at least 1")
     if args.workers < 1:
         raise ValueError("--workers must be at least 1")
+    if args.guidance_region_radius < 0:
+        raise ValueError("--guidance-region-radius must be non-negative")
+    if not 1.0 <= args.conservative_max_ratio <= 2.0:
+        raise ValueError("--conservative-max-ratio must be in [1, 2]")
 
     engine = load_engine(required=("run_cadfs_next",))
     print(f"engine: {getattr(engine, '__file__', 'unknown')}", flush=True)
     legacy = load_json(ROOT / "results/models/tuned.json")
     base = dict(legacy["base"])
     base["theta_c"] = legacy["theta_c"]
-    fast_path = ROOT / "results/models/fast_ensemble.txt"
+    standard_fast = ROOT / "results/models/fast_ensemble.txt"
     guidance_name = args.guidance
     if guidance_name == "auto":
-        guidance_name = "fast" if fast_path.exists() else "cnn"
+        guidance_name = (
+            "fast" if args.guidance_model or standard_fast.exists()
+            else "cnn")
+    default_model = (
+        "results/models/fast_ensemble.txt"
+        if guidance_name == "fast"
+        else "results/models/ensemble.txt")
+    model_path = Path(args.guidance_model or default_model)
+    if not model_path.is_absolute():
+        model_path = ROOT / model_path
+    fast_path = model_path
     if guidance_name == "fast":
         if not fast_path.exists():
             raise FileNotFoundError(
                 f"{fast_path} is missing; run python/ml/train_student.py")
-        ensemble = engine.FastEnsembleGuidance(str(fast_path))
+        ensemble = engine.FastEnsembleGuidance(str(model_path))
     elif guidance_name == "cnn-adaptive":
         ensemble = engine.EnsembleGuidance(
-            str(ROOT / "results/models/ensemble.txt"),
+            str(model_path),
             args.early_exit_members, args.early_exit_variance)
     else:
-        ensemble = engine.EnsembleGuidance(
-            str(ROOT / "results/models/ensemble.txt"))
+        ensemble = engine.EnsembleGuidance(str(model_path))
     instances = load_validation(
         engine, args.splits, args.per_split, args.seed)
+    base["guidance_region_radius"] = args.guidance_region_radius
     print(f"validation instances: {len(instances)}; workers: {args.workers}",
           flush=True)
     candidates = joint_candidates(legacy)
@@ -307,20 +330,41 @@ def main() -> None:
     reference = audit[0]["metrics"]
     width_bound = float(base["W"])
     selected: dict[str, dict] = {}
+    quality_gate_satisfied: dict[str, bool] = {}
     for profile in ("balanced", "conservative"):
         eligible = []
+        noncollapsed = []
         for trial in audit:
             score, rejected, collapse = score_trial(
                 trial["metrics"], reference, width_bound, profile)
             trial[f"{profile}_score"] = score
             trial["collapse_penalty"] = collapse
             trial["rejected_collapse"] = rejected
+            quality_rejected = (
+                profile == "conservative" and
+                trial["metrics"]["max_ratio"] >
+                args.conservative_max_ratio)
+            trial[f"{profile}_quality_rejected"] = quality_rejected
             if not rejected:
+                noncollapsed.append((score, trial))
+            if not rejected and not quality_rejected:
                 eligible.append((score, trial))
         if not eligible:
-            raise RuntimeError(
-                "all candidates collapsed; expand the joint grid or inspect "
-                "confidence calibration")
+            if not noncollapsed:
+                raise RuntimeError(
+                    "all candidates collapsed; expand the joint grid or inspect "
+                    "confidence calibration")
+            if profile == "conservative":
+                print(
+                    "warning: no non-collapsed candidate satisfies "
+                    f"max_ratio<={args.conservative_max_ratio:g}; "
+                    "saving the best non-collapsed candidate with "
+                    "quality_gate_satisfied=false",
+                    flush=True)
+            eligible = noncollapsed
+            quality_gate_satisfied[profile] = False
+        else:
+            quality_gate_satisfied[profile] = True
         selected[profile] = min(eligible, key=lambda item: item[0])[1]
 
     created_at = datetime.now(timezone.utc).isoformat()
@@ -337,6 +381,10 @@ def main() -> None:
             "seed": args.seed,
             "workers": args.workers,
             "guidance_backend": guidance_name,
+            "guidance_model": str(model_path),
+            "guidance_region_radius": args.guidance_region_radius,
+            "conservative_max_ratio": args.conservative_max_ratio,
+            "quality_gate_satisfied": quality_gate_satisfied[profile],
             "selected_name": trial["name"],
             "selected_metrics": trial["metrics"],
             **trial["settings"],

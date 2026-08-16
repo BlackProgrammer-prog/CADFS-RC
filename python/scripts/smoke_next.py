@@ -28,31 +28,48 @@ def main() -> None:
     parser.add_argument(
         "--guidance", choices=["auto", "fast", "cnn", "cnn-adaptive"],
         default="auto")
+    parser.add_argument(
+        "--guidance-model",
+        help="versioned guidance export; defaults to the standard model path")
+    parser.add_argument(
+        "--tuned-next", default="results/models/tuned_next.json",
+        help="versioned CADFS Next tuning JSON")
     parser.add_argument("--early-exit-members", type=int, default=2)
     parser.add_argument("--early-exit-variance", type=float, default=0.01)
     args = parser.parse_args()
 
     engine = load_engine(required=("run_cadfs_next",))
-    tuned_path = ROOT / "results/models/tuned_next.json"
+    tuned_path = Path(args.tuned_next)
+    if not tuned_path.is_absolute():
+        tuned_path = ROOT / tuned_path
     legacy, next_settings = load_settings(ROOT, tuned_path)
     if not tuned_path.exists():
         print("[smoke] tuned_next.json not found; using documented defaults")
-    fast_path = ROOT / "results/models/fast_ensemble.txt"
+    standard_fast = ROOT / "results/models/fast_ensemble.txt"
     guidance_name = args.guidance
     if guidance_name == "auto":
-        guidance_name = "fast" if fast_path.exists() else "cnn"
+        guidance_name = (
+            "fast" if args.guidance_model or standard_fast.exists()
+            else "cnn")
+    default_model = (
+        "results/models/fast_ensemble.txt"
+        if guidance_name == "fast"
+        else "results/models/ensemble.txt")
+    model_path = Path(args.guidance_model or default_model)
+    if not model_path.is_absolute():
+        model_path = ROOT / model_path
+    fast_path = model_path
     if guidance_name == "fast":
         if not fast_path.exists():
             raise FileNotFoundError(
                 f"{fast_path} is missing; run train_student.py")
-        ensemble = engine.FastEnsembleGuidance(str(fast_path))
+        ensemble = engine.FastEnsembleGuidance(str(model_path))
     elif guidance_name == "cnn-adaptive":
         ensemble = engine.EnsembleGuidance(
-            str(ROOT / "results/models/ensemble.txt"),
+            str(model_path),
             args.early_exit_members, args.early_exit_variance)
     else:
-        ensemble = engine.EnsembleGuidance(
-            str(ROOT / "results/models/ensemble.txt"))
+        ensemble = engine.EnsembleGuidance(str(model_path))
     available = build_methods(engine, ensemble, legacy, next_settings)
     methods = select_methods(available, "main", args.methods)
 
