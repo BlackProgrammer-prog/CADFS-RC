@@ -32,6 +32,11 @@ struct NodeEval {
     double structural_risk = 0.0;
 };
 
+struct RegionEval {
+    FusionResult fusion;
+    double anchor_normalized = 0.0;
+};
+
 double unit(double value, double invalid_value = 1.0) {
     if (!std::isfinite(value)) return invalid_value;
     return std::clamp(value, 0.0, 1.0);
@@ -72,6 +77,9 @@ SearchResult cadfs_next_search(
     if (cfg.connectivity != 4 && cfg.connectivity != 8) {
         throw std::invalid_argument(__func__);
     }
+    if (cfg.guidance_region_radius < 0) {
+        throw std::invalid_argument(__func__);
+    }
     if (!m.passable(ins.start_x, ins.start_y) ||
         !m.passable(ins.goal_x, ins.goal_y)) {
         return result;
@@ -93,13 +101,23 @@ SearchResult cadfs_next_search(
         return anchor_h(m, node, goal, cfg.connectivity);
     };
 
-    std::unordered_map<int, NodeEval> cache;
-    cache.reserve(static_cast<std::size_t>(
+    std::unordered_map<int, NodeEval> node_cache;
+    node_cache.reserve(static_cast<std::size_t>(
+            std::min(m.size(), 4096)));
+    std::unordered_map<int, RegionEval> region_cache;
+    region_cache.reserve(static_cast<std::size_t>(
             std::min(m.size(), 4096)));
 
+    auto region_key = [&](int node) {
+        if (cfg.guidance_region_radius == 0) return node;
+        const int side = 2 * cfg.guidance_region_radius + 1;
+        const int columns = (m.width() + side - 1) / side;
+        return (m.y_of(node) / side) * columns + m.x_of(node) / side;
+    };
+
     auto evaluate_node = [&](int node) -> const NodeEval& {
-        const auto cached = cache.find(node);
-        if (cached != cache.end()) {
+        const auto cached = node_cache.find(node);
+        if (cached != node_cache.end()) {
             ++result.model_cache_hits;
             return cached->second;
         }
@@ -107,28 +125,52 @@ SearchResult cadfs_next_search(
         const double anchor = h(node);
         const double anchor_normalized = normalized(anchor, map_scale);
         NodeEval evaluation;
-        const auto inference_started = std::chrono::steady_clock::now();
+        const int key = region_key(node);
+        const auto region_cached = region_cache.find(key);
+        if (region_cached != region_cache.end()) {
+            ++result.model_cache_hits;
+            evaluation.fusion = region_cached->second.fusion;
+            const double residual =
+                    evaluation.fusion.fused_prediction -
+                    region_cached->second.anchor_normalized;
+            evaluation.fusion.fused_prediction = unit(
+                    anchor_normalized + residual, anchor_normalized);
+            for (ExpertPrediction& prediction :
+                 evaluation.fusion.predictions) {
+                const double member_residual =
+                        prediction.mean -
+                        region_cached->second.anchor_normalized;
+                prediction.mean = unit(
+                        anchor_normalized + member_residual,
+                        anchor_normalized);
+            }
+        } else {
+            const auto inference_started = std::chrono::steady_clock::now();
 
-        try {
-            evaluation.fusion = fusion.evaluate(
-                    ExpertContext{m, node, start, goal,
-                                  anchor, anchor_normalized});
-        } catch (const std::exception&) {
-            evaluation.fusion.fused_prediction = anchor_normalized;
-            evaluation.fusion.intra_uncertainty = 1.0;
-            evaluation.fusion.inter_disagreement = 1.0;
-            evaluation.fusion.predictions.push_back(
-                    ExpertPrediction{std::string{}, anchor_normalized, 1.0, true});
-            evaluation.fusion.normalized_weights.push_back(1.0);
-        }
-        result.model_eval_time_ms +=
-                std::chrono::duration<double, std::milli>(
-                        std::chrono::steady_clock::now() -
-                        inference_started).count();
-        ++result.model_eval_count;
-        for (const ExpertPrediction& prediction :
-             evaluation.fusion.predictions) {
-            result.model_member_evals += prediction.member_evaluations;
+            try {
+                evaluation.fusion = fusion.evaluate(
+                        ExpertContext{m, node, start, goal,
+                                      anchor, anchor_normalized});
+            } catch (const std::exception&) {
+                evaluation.fusion.fused_prediction = anchor_normalized;
+                evaluation.fusion.intra_uncertainty = 1.0;
+                evaluation.fusion.inter_disagreement = 1.0;
+                evaluation.fusion.predictions.push_back(
+                        ExpertPrediction{std::string{}, anchor_normalized,
+                                         1.0, true});
+                evaluation.fusion.normalized_weights.push_back(1.0);
+            }
+            result.model_eval_time_ms +=
+                    std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() -
+                            inference_started).count();
+            ++result.model_eval_count;
+            for (const ExpertPrediction& prediction :
+                 evaluation.fusion.predictions) {
+                result.model_member_evals += prediction.member_evaluations;
+            }
+            region_cache.emplace(
+                    key, RegionEval{evaluation.fusion, anchor_normalized});
         }
 
         evaluation.fusion.fused_prediction =
@@ -154,7 +196,7 @@ SearchResult cadfs_next_search(
                 ? unit(confidence_estimator.estimate(signals), 0.0)
                 : 1.0;
 
-        return cache.emplace(node, std::move(evaluation)).first->second;
+        return node_cache.emplace(node, std::move(evaluation)).first->second;
     };
 
     const int window_size = std::max(1, cfg.K);

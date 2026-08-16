@@ -20,6 +20,12 @@ struct Config {
     int L = 16;
     int K = 50;
     int connectivity = 8;
+    // Optional first-touch regional cache for learned guidance. Radius 0 is
+    // the legacy exact per-node behavior. Radius r partitions the map into
+    // square Chebyshev cells of side 2r+1 and evaluates the model once per
+    // visited cell; node priorities reuse the learned residual relative to
+    // the admissible anchor. This changes only FOCAL's secondary ordering.
+    int guidance_region_radius = 0;
     // controller
     ControllerType controller = ControllerType::Multiplicative;
     double lin_a = 0.34, lin_b = 0.33, lin_c = 0.33; // a+b+c = 1
@@ -53,8 +59,9 @@ struct SearchResult {
     double mean_w = 0.0, min_w = 0.0, max_w = 0.0;
     double mean_abs_dw = 0.0;       // oscillation statistic mean |w_t - w_{t-1}|
     double mean_C = 0.0, mean_R = 0.0;
-    // Learned-guidance systems telemetry. A model evaluation is one cache
-    // miss (one node); member evaluations expose adaptive/full ensembles.
+    // Learned-guidance systems telemetry. A model evaluation is one guidance
+    // cache miss (one node at radius 0, one first-touched region otherwise);
+    // member evaluations expose adaptive/full ensembles.
     int64_t model_eval_count = 0;
     int64_t model_member_evals = 0;
     int64_t model_cache_hits = 0;
