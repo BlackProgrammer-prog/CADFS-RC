@@ -431,6 +431,7 @@ def make_figures(nets: list[CostToGoNet], device: torch.device,
 
 
 def main() -> None:
+    global MOD
     parser = argparse.ArgumentParser()
     parser.add_argument("--K", type=int, default=7)
     parser.add_argument("--epochs", type=int, default=80)
@@ -446,11 +447,19 @@ def main() -> None:
                         default=False)
     parser.add_argument("--compile", action=argparse.BooleanOptionalAction,
                         default=False)
+    parser.add_argument(
+        "--artifacts-dir", default="results/models",
+        help="versioned checkpoint/calibration directory")
     args = parser.parse_args()
     if args.K < 2:
         parser.error("--K must be at least 2 for uncertainty estimation")
     if args.structural_weight <= 0:
         parser.error("--structural-weight must be positive")
+    artifacts_dir = Path(args.artifacts_dir)
+    MOD = (
+        artifacts_dir if artifacts_dir.is_absolute()
+        else ROOT / artifacts_dir)
+    MOD.mkdir(parents=True, exist_ok=True)
 
     device = pick_device(args.device)
     if args.amp and device.type not in {"cpu", "cuda"}:

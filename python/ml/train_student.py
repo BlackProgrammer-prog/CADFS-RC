@@ -9,9 +9,12 @@ from __future__ import annotations
 
 import argparse
 import copy
+import hashlib
 import json
 import math
+import platform
 import random
+import subprocess
 import sys
 from pathlib import Path
 
@@ -37,6 +40,23 @@ MODELS = ROOT / "results/models"
 TRAIN_SPLITS = ("train", "train_structural")
 VAL_SPLITS = ("val", "val_structural")
 CALIBRATION_SPLIT = "val_shift"
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for block in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def git_commit() -> str | None:
+    try:
+        return subprocess.check_output(
+            ["git", "-C", str(ROOT), "rev-parse", "HEAD"],
+            text=True, stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
 
 
 class PairedGuidanceDataset(Dataset):
@@ -464,10 +484,49 @@ def main() -> None:
     if not output.is_absolute():
         output = ROOT / output
     export(model, calibrated, output)
+    checkpoint = MODELS / "fast_student.pt"
+    manifest = {
+        "schema_version": 1,
+        "model": {
+            "patch": model.patch_size,
+            "extra": model.extra_features,
+            "hidden": list(model.hidden),
+            "heads": model.head_count,
+            "target_transform": "LOG1P",
+        },
+        "training": vars(args),
+        "training_splits": list(TRAIN_SPLITS),
+        "validation_splits": list(VAL_SPLITS),
+        "calibration_split": CALIBRATION_SPLIT,
+        "resolved_device": str(device),
+        "environment": {
+            "platform": platform.platform(),
+            "python": sys.version,
+            "torch": torch.__version__,
+            "cuda_runtime": torch.version.cuda,
+            "cuda_available": torch.cuda.is_available(),
+        },
+        "git_commit": git_commit(),
+        "calibration": calibrated,
+        "artifacts": {
+            "checkpoint": {
+                "path": str(checkpoint),
+                "sha256": sha256_file(checkpoint),
+            },
+            "cpp_export": {
+                "path": str(output),
+                "sha256": sha256_file(output),
+            },
+        },
+    }
+    with (MODELS / "training_manifest_fast.json").open(
+            "w", encoding="utf-8") as stream:
+        json.dump(manifest, stream, indent=2)
     print(
         f"student -> {MODELS / 'fast_student.pt'}\n"
         f"export  -> {output}\n"
-        f"calibration -> {MODELS / 'calibration_fast.json'}")
+        f"calibration -> {MODELS / 'calibration_fast.json'}\n"
+        f"manifest -> {MODELS / 'training_manifest_fast.json'}")
 
 
 if __name__ == "__main__":
