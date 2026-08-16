@@ -275,6 +275,30 @@ int main() {
         CHECK(next.model_eval_time_ms >= 0.0,
               "model evaluation time is valid");
 
+        Config exact_cfg = cfg;
+        exact_cfg.guidance_region_radius = 0;
+        SearchResult exact = cadfs_next_search(
+                m, ins, exact_cfg, fusion, confidence_next,
+                next_controller);
+        CHECK(exact.found == next.found && exact.cost == next.cost &&
+              exact.expansions == next.expansions &&
+              exact.model_eval_count == next.model_eval_count,
+              "radius zero preserves exact legacy behavior");
+
+        Config regional_cfg = cfg;
+        regional_cfg.guidance_region_radius =
+                std::max(m.width(), m.height());
+        SearchResult regional = cadfs_next_search(
+                m, ins, regional_cfg, fusion, confidence_next,
+                next_controller);
+        CHECK(regional.found, "regional guidance finds a path");
+        CHECK(regional.cost <= cfg.W * cstar + 1e-9,
+              "regional guidance respects the bound");
+        CHECK(regional.model_eval_count == 1,
+              "one-region guidance evaluates the model once");
+        CHECK(regional.model_cache_hits > 0,
+              "regional guidance reuses its model result");
+
         int64_t logged_iterations = 0;
         bool invalid_logged_width = false;
         IterationLogger logger = [&](const IterationLog& log) {
