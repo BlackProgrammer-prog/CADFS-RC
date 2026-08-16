@@ -27,6 +27,7 @@ from cadfs_py.experiments import (  # noqa: E402
     load_settings,
     select_methods,
 )
+from freeze_final_protocol import verify as verify_frozen_protocol  # noqa: E402
 
 FIELDS = [
     "problem_id", "split", "family", "density", "map_id", "instance",
@@ -72,6 +73,9 @@ def parse_args() -> argparse.Namespace:
         "--method-order", choices=["fixed", "rotate", "shuffle"],
         default="fixed", help="counterbalance timing order across queries")
     parser.add_argument("--out", default="results/logs/bench_next.csv")
+    parser.add_argument(
+        "--protocol-lock",
+        help="verify this frozen source/model/tuning lock before benchmarking")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--append", action="store_true")
     mode.add_argument("--overwrite", action="store_true")
@@ -151,9 +155,16 @@ def main() -> None:
     args = parse_args()
     if args.warmup_runs < 0 or args.repetitions < 1:
         raise ValueError("warmup-runs must be >= 0 and repetitions must be >= 1")
+    protocol_lock = (
+        resolve(ROOT, args.protocol_lock) if args.protocol_lock else None)
+    if protocol_lock is not None:
+        if not protocol_lock.is_file():
+            raise FileNotFoundError(protocol_lock)
+        verify_frozen_protocol(protocol_lock, require_paper_final=True)
     engine = load_engine(required=("run_cadfs_next",))
+    tuned_path = resolve(ROOT, args.tuned_next)
     legacy, next_settings = load_settings(
-        ROOT, resolve(ROOT, args.tuned_next))
+        ROOT, tuned_path)
     metric_tuned_path = (
         resolve(ROOT, args.tuned_next_metric)
         if args.tuned_next_metric else None)
@@ -187,6 +198,23 @@ def main() -> None:
     else:
         ensemble = engine.EnsembleGuidance(str(guidance_path))
 
+    if protocol_lock is not None:
+        lock_payload = json.loads(protocol_lock.read_text(encoding="utf-8"))
+        frozen = set(lock_payload["artifacts"])
+        required_paths = [
+            ROOT / "results/models/tuned.json", tuned_path, guidance_path,
+        ]
+        if metric_tuned_path is not None:
+            required_paths.append(metric_tuned_path)
+        required_names = {
+            path.relative_to(ROOT).as_posix() for path in required_paths
+        }
+        missing_frozen = sorted(required_names - frozen)
+        if missing_frozen:
+            raise RuntimeError(
+                "benchmark input is not covered by protocol lock: " +
+                ", ".join(missing_frozen))
+
     available = build_methods(
         engine, ensemble, legacy, next_settings,
         resolve(ROOT, args.mlp_model),
@@ -211,7 +239,6 @@ def main() -> None:
                 "cannot append: existing CSV schema differs from CADFS Next schema")
 
     created_at = datetime.now(timezone.utc)
-    tuned_path = resolve(ROOT, args.tuned_next)
     split_hashes = {
         split: sha256_file(ROOT / "data/instances" / f"{split}.csv")
         for split in args.splits
@@ -248,6 +275,10 @@ def main() -> None:
             "metric_next_tuning_sha256": (
                 sha256_file(metric_tuned_path)
                 if metric_tuned_path else None),
+            "protocol_lock": ({
+                "path": str(protocol_lock),
+                "sha256": sha256_file(protocol_lock),
+            } if protocol_lock else None),
             "split_csv_sha256": split_hashes,
         },
         "timing_protocol": {

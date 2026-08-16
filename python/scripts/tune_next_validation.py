@@ -43,6 +43,9 @@ def parse_args() -> argparse.Namespace:
         "--out-conservative",
         default="results/models/tuned_next_conservative.json")
     parser.add_argument(
+        "--out-tail",
+        help="optional third profile selected for split-wise tail robustness")
+    parser.add_argument(
         "--guidance", choices=["auto", "fast", "cnn", "cnn-adaptive"],
         default="auto")
     parser.add_argument(
@@ -82,6 +85,31 @@ def load_validation(engine, splits: list[str], per_split: int, seed: int):
     return instances
 
 
+def percentile(values: list[float], quantile: float) -> float:
+    ordered = sorted(values)
+    if not ordered:
+        return math.nan
+    position = (len(ordered) - 1) * quantile
+    lower = math.floor(position)
+    upper = math.ceil(position)
+    if lower == upper:
+        return ordered[lower]
+    fraction = position - lower
+    return ordered[lower] * (1.0 - fraction) + ordered[upper] * fraction
+
+
+def summarize_ratios(values: list[float]) -> dict:
+    threshold = percentile(values, .95)
+    tail = [value for value in values if value >= threshold]
+    return {
+        "mean_ratio": statistics.mean(values),
+        "p95_ratio": threshold,
+        "p99_ratio": percentile(values, .99),
+        "cvar95_ratio": statistics.mean(tail),
+        "max_ratio": max(values),
+    }
+
+
 def evaluate(engine, ensemble, instances, base: dict, settings: dict,
              workers: int) -> dict:
     expansions: list[int] = []
@@ -90,6 +118,7 @@ def evaluate(engine, ensemble, instances, base: dict, settings: dict,
     fallback_rates: list[float] = []
     mean_widths: list[float] = []
     model_times: list[float] = []
+    split_values: dict[str, dict[str, list[float]]] = {}
     maximum_width = float(base["W"])
 
     def run_one(item):
@@ -103,23 +132,29 @@ def evaluate(engine, ensemble, instances, base: dict, settings: dict,
         if ratio > maximum_width + 1e-9:
             raise AssertionError(f"validation bound violation: ratio={ratio}")
         return (
-            result["expansions"], result["runtime_ms"], ratio,
+            item["split"], result["expansions"], result["runtime_ms"], ratio,
             result["fallback_rate"], result["mean_w"],
             result["model_eval_time_ms"])
 
     started = time.perf_counter()
     if workers == 1:
         results = map(run_one, instances)
-        for expanded, runtime, ratio, fallback, width, model_time in results:
+        for (split, expanded, runtime, ratio, fallback, width,
+             model_time) in results:
             expansions.append(expanded)
             runtimes.append(runtime)
             ratios.append(ratio)
             fallback_rates.append(fallback)
             mean_widths.append(width)
             model_times.append(model_time)
+            values = split_values.setdefault(
+                split, {"ratios": [], "expansions": [], "runtimes": []})
+            values["ratios"].append(ratio)
+            values["expansions"].append(expanded)
+            values["runtimes"].append(runtime)
     else:
         with ThreadPoolExecutor(max_workers=workers) as executor:
-            for (expanded, runtime, ratio, fallback, width,
+            for (split, expanded, runtime, ratio, fallback, width,
                  model_time) in executor.map(run_one, instances):
                 expansions.append(expanded)
                 runtimes.append(runtime)
@@ -127,6 +162,11 @@ def evaluate(engine, ensemble, instances, base: dict, settings: dict,
                 fallback_rates.append(fallback)
                 mean_widths.append(width)
                 model_times.append(model_time)
+                values = split_values.setdefault(
+                    split, {"ratios": [], "expansions": [], "runtimes": []})
+                values["ratios"].append(ratio)
+                values["expansions"].append(expanded)
+                values["runtimes"].append(runtime)
     wall_seconds = time.perf_counter() - started
 
     return {
@@ -140,6 +180,41 @@ def evaluate(engine, ensemble, instances, base: dict, settings: dict,
         "mean_model_eval_time_ms": statistics.mean(model_times),
         "wall_seconds": wall_seconds,
         "workers": workers,
+        "split_metrics": {
+            split: {
+                **summarize_ratios(values["ratios"]),
+                "mean_expansions": statistics.mean(values["expansions"]),
+                "mean_runtime_ms": statistics.mean(values["runtimes"]),
+            }
+            for split, values in sorted(split_values.items())
+        },
+    }
+
+
+def evaluate_wastar_tail(engine, instances, base: dict, workers: int) -> dict:
+    width = float(base["W"])
+
+    def run_one(item):
+        config = dict(base, h_max=item["diagonal"])
+        result = engine.run_astar(
+            item["map"], item["start"], item["goal"], config, width)
+        if not result["found"]:
+            raise AssertionError(
+                f"Weighted A* failed on validation split {item['split']}")
+        return item["split"], result["cost"] / item["optimal"]
+
+    grouped: dict[str, list[float]] = {}
+    if workers == 1:
+        results = map(run_one, instances)
+        for split, ratio in results:
+            grouped.setdefault(split, []).append(ratio)
+    else:
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            for split, ratio in executor.map(run_one, instances):
+                grouped.setdefault(split, []).append(ratio)
+    return {
+        split: summarize_ratios(values)
+        for split, values in sorted(grouped.items())
     }
 
 
@@ -254,7 +329,8 @@ def score_trial(metrics: dict, reference: dict, width_bound: float,
 def main() -> None:
     args = parse_args()
     forbidden = {"test", "shift_density", "shift_size", "shift_family"}
-    if forbidden.intersection(args.splits):
+    if (forbidden.intersection(args.splits) or
+            any(split.startswith("final_") for split in args.splits)):
         raise ValueError("test/OOD-test splits cannot be used for tuning")
     if args.per_split < 1:
         raise ValueError("--per-split must be at least 1")
@@ -367,6 +443,57 @@ def main() -> None:
             quality_gate_satisfied[profile] = True
         selected[profile] = min(eligible, key=lambda item: item[0])[1]
 
+    tail_reference = None
+    if args.out_tail:
+        print("evaluating split-wise Weighted A* tail reference", flush=True)
+        tail_reference = evaluate_wastar_tail(
+            engine, instances, base, args.workers)
+        eligible_tail = []
+        noncollapsed_tail = []
+        for trial in audit:
+            split_metrics = trial["metrics"]["split_metrics"]
+            max_margins = [
+                split_metrics[split]["max_ratio"] - values["max_ratio"]
+                for split, values in tail_reference.items()
+            ]
+            cvar_margins = [
+                split_metrics[split]["cvar95_ratio"] - values["cvar95_ratio"]
+                for split, values in tail_reference.items()
+            ]
+            p95_margins = [
+                split_metrics[split]["p95_ratio"] - values["p95_ratio"]
+                for split, values in tail_reference.items()
+            ]
+            score = (
+                max(max_margins), max(cvar_margins), max(p95_margins),
+                trial["metrics"]["mean_expansions"] /
+                max(1e-12, reference["mean_expansions"]),
+                trial["metrics"]["mean_runtime_ms"] /
+                max(1e-12, reference["mean_runtime_ms"]),
+            )
+            gate_pass = all(margin < 0.0 for margin in max_margins)
+            trial["tail_score"] = score
+            trial["tail_max_margins_vs_wastar"] = {
+                split: split_metrics[split]["max_ratio"] - values["max_ratio"]
+                for split, values in tail_reference.items()
+            }
+            trial["tail_gate_pass"] = gate_pass
+            if not trial["rejected_collapse"]:
+                noncollapsed_tail.append((score, trial))
+                if gate_pass:
+                    eligible_tail.append((score, trial))
+        if not noncollapsed_tail:
+            raise RuntimeError("all tail candidates collapsed")
+        quality_gate_satisfied["tail"] = bool(eligible_tail)
+        if not eligible_tail:
+            print(
+                "warning: no non-collapsed candidate beats the validation "
+                "Weighted A* maximum on every split; saving the closest "
+                "candidate with quality_gate_satisfied=false",
+                flush=True)
+            eligible_tail = noncollapsed_tail
+        selected["tail"] = min(eligible_tail, key=lambda item: item[0])[1]
+
     created_at = datetime.now(timezone.utc).isoformat()
 
     def write_profile(profile: str, value: str) -> Path:
@@ -385,6 +512,8 @@ def main() -> None:
             "guidance_region_radius": args.guidance_region_radius,
             "conservative_max_ratio": args.conservative_max_ratio,
             "quality_gate_satisfied": quality_gate_satisfied[profile],
+            "wastar_split_tail_reference": (
+                tail_reference if profile == "tail" else None),
             "selected_name": trial["name"],
             "selected_metrics": trial["metrics"],
             **trial["settings"],
@@ -403,6 +532,9 @@ def main() -> None:
         "conservative", args.out_conservative)
     print(f"balanced     -> {balanced_path}")
     print(f"conservative -> {conservative_path}")
+    if args.out_tail:
+        tail_path = write_profile("tail", args.out_tail)
+        print(f"tail-robust  -> {tail_path}")
 
 
 if __name__ == "__main__":

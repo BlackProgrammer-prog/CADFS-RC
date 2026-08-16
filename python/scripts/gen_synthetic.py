@@ -25,7 +25,10 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
-sys.path.insert(0, str(ROOT / "build"))
+# Prefer the paper-timing Release engine, while retaining compatibility with
+# the historical build directory and an in-tree copied extension.
+for candidate in reversed((ROOT / "cmake-build-release", ROOT / "build", ROOT)):
+    sys.path.insert(0, str(candidate))
 import cadfs_engine as eng  # noqa: E402
 
 CONN = 8
@@ -128,22 +131,31 @@ def sample_queries(gm, rows: list[str], n_queries: int, rng: random.Random,
     max_goal_tries = max_goal_tries or max(16, n_queries * 4)
     out: list[tuple] = []
     used: set[tuple[tuple[int, int], tuple[int, int]]] = set()
-    goals = free.copy()
-    rng.shuffle(goals)
+    goals = rng.sample(free, min(len(free), max_goal_tries))
 
-    for g in goals[:max_goal_tries]:
+    for g in goals:
         distances = eng.dijkstra_all(gm, g[0], g[1], CONN)
-        candidates = []
+        # Reservoir-sample only the starts that will be used.  Materializing
+        # every eligible node costs hundreds of MB per worker on 1024/2048
+        # maps and is unnecessary for a uniform random sample.
+        wanted = min(starts_per_goal, n_queries - len(out))
+        candidates: list[tuple[tuple[int, int], float]] = []
+        eligible = 0
         for s in free:
             if s == g or (s, g) in used:
                 continue
             cost = float(distances[s[1] * w + s[0]])
             if math.isfinite(cost) and cost >= min_frac * diag:
-                candidates.append((s, cost))
-        rng.shuffle(candidates)
+                eligible += 1
+                if len(candidates) < wanted:
+                    candidates.append((s, cost))
+                else:
+                    replacement = rng.randrange(eligible)
+                    if replacement < wanted:
+                        candidates[replacement] = (s, cost)
 
         # Reuse the reverse search without letting one goal dominate a map.
-        for s, cost in candidates[:min(starts_per_goal, n_queries - len(out))]:
+        for s, cost in candidates:
             used.add((s, g))
             out.append((s, g, cost))
         if len(out) >= n_queries:
