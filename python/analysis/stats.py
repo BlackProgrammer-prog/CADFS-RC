@@ -4,6 +4,36 @@ import numpy as np
 from scipy import stats as st
 
 
+def bootstrap_ci(values: np.ndarray, statistic: str = "mean",
+                 n_boot: int = 5000, seed: int = 0):
+    """Deterministic percentile bootstrap CI for a one-sample statistic."""
+    values = np.asarray(values, dtype=float)
+    if len(values) == 0:
+        return np.nan, np.nan
+    rng = np.random.default_rng(seed)
+    idx = rng.integers(0, len(values), size=(n_boot, len(values)))
+    samples = values[idx]
+    estimates = (samples.mean(axis=1) if statistic == "mean"
+                 else np.median(samples, axis=1))
+    return (float(np.percentile(estimates, 2.5)),
+            float(np.percentile(estimates, 97.5)))
+
+
+def holm_adjust(p_values: np.ndarray) -> np.ndarray:
+    """Holm step-down family-wise adjusted p-values."""
+    values = np.asarray(p_values, dtype=float)
+    if len(values) == 0:
+        return values.copy()
+    order = np.argsort(values)
+    adjusted = np.empty_like(values)
+    running = 0.0
+    count = len(values)
+    for rank, index in enumerate(order):
+        running = max(running, (count - rank) * values[index])
+        adjusted[index] = min(1.0, running)
+    return adjusted
+
+
 def paired_wilcoxon(a: np.ndarray, b: np.ndarray):
     """Wilcoxon signed-rank on paired samples; returns (stat, p)."""
     d = a - b

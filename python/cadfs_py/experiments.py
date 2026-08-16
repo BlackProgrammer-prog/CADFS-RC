@@ -22,7 +22,7 @@ DEFAULT_NEXT = {
 
 METHOD_SUITES = {
     "main": [
-        "astar", "wastar", "focal_plain", "learn_focal_W",
+        "dijkstra", "astar", "wastar", "focal_plain", "learn_focal_W",
         "learn_focal_wstar", "cadfs", "cadfs_next",
     ],
     "next": [
@@ -59,6 +59,9 @@ def next_config(base: dict, settings: dict, **overrides: Any) -> dict:
     controller = settings.get("controller", DEFAULT_NEXT["controller"])
     config = dict(
         base,
+        guidance_region_radius=settings.get(
+            "guidance_region_radius",
+            base.get("guidance_region_radius", 0)),
         expert_weights=list(expert["weights"]),
         confidence_intra_weight=confidence.get("intra_weight", 1.0),
         confidence_inter_weight=confidence.get("inter_weight", 1.0),
@@ -74,7 +77,8 @@ def next_config(base: dict, settings: dict, **overrides: Any) -> dict:
 
 
 def build_methods(engine: Any, ensemble: Any, legacy: dict,
-                  next_settings: dict, mlp_path: Path | None = None) -> dict[str, Method]:
+                  next_settings: dict, mlp_path: Path | None = None,
+                  metric_next_settings: dict | None = None) -> dict[str, Method]:
     base = dict(legacy["base"])
     base["theta_c"] = legacy["theta_c"]
     tau = legacy["tau_c"]
@@ -93,7 +97,14 @@ def build_methods(engine: Any, ensemble: Any, legacy: dict,
             return engine.run_cadfs_next(map_, start, goal, candidate, ensemble)
         return run
 
+    def configured_next_variant(settings: dict, **overrides: Any) -> Method:
+        def run(map_, start, goal, config):
+            candidate = next_config(config, settings, **overrides)
+            return engine.run_cadfs_next(map_, start, goal, candidate, ensemble)
+        return run
+
     methods: dict[str, Method] = {
+        "dijkstra": lambda m, s, g, c: engine.run_astar(m, s, g, c, 0.0),
         "astar": lambda m, s, g, c: engine.run_astar(m, s, g, c, 1.0),
         "wastar": lambda m, s, g, c: engine.run_astar(m, s, g, c, width),
         "focal_plain": lambda m, s, g, c: engine.run_focal(m, s, g, c, None, width),
@@ -118,6 +129,9 @@ def build_methods(engine: Any, ensemble: Any, legacy: dict,
         "cadfs_next_threshold": next_variant(next_controller="threshold"),
         "cadfs_next_fixed": next_variant(
             next_controller="fixed", tuned_fixed_w=tuned_width),
+        "cadfs_next_metric_r1": next_variant(guidance_region_radius=1),
+        "cadfs_next_metric_r3": next_variant(guidance_region_radius=3),
+        "cadfs_next_metric_r7": next_variant(guidance_region_radius=7),
     }
 
     if mlp_path and mlp_path.exists():
@@ -130,6 +144,10 @@ def build_methods(engine: Any, ensemble: Any, legacy: dict,
         if model.get("actions"):
             mlp["mlp_actions"] = model["actions"]
         methods["cadfs_next_mlp"] = next_variant(**mlp)
+
+    if metric_next_settings is not None:
+        methods["cadfs_next_metric_tuned"] = configured_next_variant(
+            metric_next_settings)
 
     METHOD_SUITES["full"] = list(methods)
     return methods
