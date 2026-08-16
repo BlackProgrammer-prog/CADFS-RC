@@ -265,8 +265,13 @@ Python dependencies are split by hardware:
 - requirements.txt: aliases the CPU profile, because CPU is the safe default.
 
 For a non-destructive, versioned, step-by-step CPU/GPU workflow, including
-regional-guidance validation and publication timing, see
+regional-guidance validation, frozen final/OOD datasets, 256--2048 scaling,
+and empirical tail-quality gates, see
 [docs/CPU_GPU_RUNBOOK_FA.md](docs/CPU_GPU_RUNBOOK_FA.md).
+
+The standalone Persian/RTL technical report, designed for GitHub Pages and
+A4 PDF export, is available at
+[docs/CADFS_RC_TECHNICAL_REPORT_FA.html](docs/CADFS_RC_TECHNICAL_REPORT_FA.html).
 
 CUDA is used for teacher/student training. Search-time inference uses the
 distilled C++ student in both profiles: launching one small CUDA kernel per
@@ -1118,7 +1123,9 @@ Use only `4` or `8` for grid connectivity.
 - The fast student code has end-to-end and parity tests, but a final full-data
   student checkpoint and its held-out benchmark must be generated before any
   speed/quality superiority claim.
-- `tune_validation.py`, `gen_synthetic.py`, and `make_labels.py` use the standard `build/` import path rather than the newer extension-discovery helper.
+- Some legacy scripts still expect an in-tree extension; `gen_synthetic.py`
+  now prefers `cmake-build-release`, then falls back to `build` and the repo
+  root.
 - The legacy `figures.py` script has a fixed input path and includes recorded calibration-comparison constants.
 - Generated data and result artifacts are ignored by Git and must be reproduced locally.
 - The bounded-suboptimality claim depends on an admissible anchor, positive edge costs, the focal termination rule, and the safety projection. Arbitrary changes to those components may invalidate it.
