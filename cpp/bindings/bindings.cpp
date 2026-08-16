@@ -26,6 +26,8 @@ static Config config_from_dict(const py::dict& d) {
     };
     c.W = get("W", c.W); c.L = get("L", c.L); c.K = get("K", c.K);
     c.connectivity = get("connectivity", c.connectivity);
+    c.guidance_region_radius = get(
+            "guidance_region_radius", c.guidance_region_radius);
     const std::string ct = get("controller", std::string("multiplicative"));
     c.controller = ct == "linear" ? ControllerType::Linear
                  : ct == "fixed" ? ControllerType::Fixed
